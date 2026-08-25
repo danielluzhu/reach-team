@@ -1,0 +1,1624 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>__SHEET_NAME__</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; display: flex; flex-direction: column;
+    font-family: system-ui, -apple-system, sans-serif; color: #1a1a1a; background: #fafafa;
+  }
+
+  /* One tab per page and one per sheet, so the bar can outgrow a phone — it
+     scrolls sideways rather than wrapping or squashing the labels. */
+  .app-nav { display: flex; gap: 1.25rem; align-items: center; padding: 0.7rem 1.25rem;
+    background: #1f2937; font: 500 0.875rem system-ui, sans-serif; flex: none; overflow-x: auto; }
+  .app-nav a { color: #cbd5e1; text-decoration: none; padding-bottom: 2px; border-bottom: 2px solid transparent;
+    white-space: nowrap; }
+  .app-nav a:hover { color: #fff; }
+  .app-nav a.active { color: #fff; border-bottom-color: #60a5fa; }
+  .app-nav .spacer { flex: 1; }
+  .app-nav .src { color: #94a3b8; font-size: 0.78rem; white-space: nowrap; }
+  .app-nav .app-user { margin-left: 0.9rem; display: flex; align-items: center; gap: 0.6rem;
+    color: #94a3b8; font-size: 0.8rem; white-space: nowrap; }
+  .app-nav .app-user form { margin: 0; }
+  .app-nav .app-user button { background: none; border: 0; padding: 0; cursor: pointer;
+    color: #94a3b8; font: inherit; text-decoration: underline; }
+  .app-nav .app-user button:hover { color: #fff; }
+
+  /* ---- toolbar ---- */
+  .toolbar {
+    flex: none; display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;
+    padding: 0.5rem 1rem; background: #fff; border-bottom: 1px solid #e3e3e3;
+  }
+  button, .btn {
+    border: 1px solid #d5d7da; background: #fff; border-radius: 6px;
+    padding: 0.35rem 0.65rem; font: 0.82rem inherit; color: #333; cursor: pointer; white-space: nowrap;
+  }
+  button:hover { background: #f5f6f7; }
+  button:active { background: #eceef0; }
+  #search {
+    border: 1px solid #d5d7da; border-radius: 6px; padding: 0.35rem 0.6rem;
+    font: 0.82rem inherit; width: 200px;
+  }
+  #search:focus { outline: 2px solid #a8c7fa; outline-offset: -1px; border-color: #a8c7fa; }
+  .rowcount { font-size: 0.78rem; color: #70757a; }
+  .toolbar .spacer { flex: 1; }
+  .status { font-size: 0.78rem; color: #70757a; padding: 0.2rem 0.55rem; border-radius: 999px; background: #f1f3f4; }
+  .status.saving { color: #a15c00; background: #fff4e0; }
+  .status.saved { color: #1e7d32; background: #e3f6e5; }
+  .status.error { color: #b3261e; background: #fce8e6; }
+  /* The two ways out of a save conflict, offered inside the status pill. */
+  .status button { font-size: 0.72rem; padding: 0.12rem 0.45rem; margin-left: 0.35rem;
+    border-radius: 4px; vertical-align: baseline; }
+  .status b { font-weight: 600; }
+  label.wrap { font-size: 0.8rem; color: #444; display: flex; align-items: center; gap: 0.3rem; cursor: pointer; }
+
+  /* ---- grid ---- */
+  .grid-wrap { flex: 1; overflow: auto; outline: none; background: #fff; }
+  table { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 0.82rem; }
+  th, td {
+    border-right: 1px solid #e6e6e6; border-bottom: 1px solid #e6e6e6;
+    padding: 0 6px; height: 30px; text-align: left; font-weight: 400;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle;
+    background: #fff;
+  }
+  thead th {
+    position: sticky; top: 0; z-index: 3; background: #f8f9fa; color: #444;
+    font-weight: 600; user-select: none; padding-right: 14px;
+  }
+  thead th .label { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+  thead th .sort { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+    font-size: 0.7rem; color: #9aa0a6; cursor: pointer; opacity: 0; }
+  thead th:hover .sort, thead th .sort.on { opacity: 1; }
+  /* The grab area is wider than the line it draws, and straddles the boundary:
+     the edge is a 1px target to the eye but an 13px one to the pointer, which
+     is what makes it catchable without aiming. It shows itself on hover over
+     the header rather than sitting there permanently. */
+  thead th .resizer { position: absolute; right: -6px; top: 0; width: 13px; height: 100%;
+    cursor: col-resize; z-index: 4; touch-action: none; }
+  thead th .resizer::after { content: ""; position: absolute; left: 6px; top: 18%; bottom: 18%;
+    width: 1px; background: transparent; transition: background 0.1s, width 0.1s; }
+  thead th:hover .resizer::after { background: #c0c6cc; }
+  thead th .resizer:hover::after, thead th .resizer.active::after { background: #1a73e8; width: 2px; left: 5px; }
+  /* The last column's handle sits wholly inside it — overhanging the right
+     edge would give the grid a few pixels of scroll with nothing in them. */
+  thead th:last-child .resizer { right: 0; }
+  thead th:last-child .resizer::after { left: 11px; }
+  /* Held through the whole drag, so the cursor doesn't flicker back to a text
+     caret over the cells and a stray selection can't build up behind it. */
+  body.col-resizing, body.col-resizing * { cursor: col-resize !important; user-select: none; }
+  thead th.dragging { opacity: 0.4; }
+  /* where the dragged column will land */
+  thead th.drop-before { box-shadow: inset 3px 0 0 #1a73e8; }
+  thead th.drop-after { box-shadow: inset -3px 0 0 #1a73e8; }
+  th.rownum, td.rownum {
+    position: sticky; left: 0; z-index: 2; width: 46px; min-width: 46px;
+    background: #f8f9fa; color: #70757a; text-align: center; font-size: 0.72rem;
+    user-select: none; cursor: pointer; padding: 0;
+  }
+  thead th.corner { z-index: 5; }
+  tbody tr:hover td.rownum { background: #eceff1; }
+  /* A start/end date pair shaded by where today falls in it — see termClass().
+     These sit above td.sel/td.focus in the file on purpose: a shaded cell that
+     is also selected should still look selected. */
+  td.term-active { background: #d8f0dc; }
+  td.term-past   { background: #e8eaed; color: #5f6368; }
+  td.term-future { background: #fdf3ce; }
+  td.sel { background: #e8f0fe; }
+  td.focus { outline: 2px solid #1a73e8; outline-offset: -2px; background: #fff; z-index: 1; }
+  td.editing { overflow: visible; position: relative; padding: 0; }
+  td.editing textarea {
+    position: absolute; left: -1px; top: -1px; min-width: calc(100% + 2px); width: calc(100% + 2px);
+    min-height: calc(100% + 2px); border: 2px solid #1a73e8; border-radius: 2px; padding: 4px 5px;
+    font: inherit; font-size: 0.82rem; resize: none; outline: none; background: #fff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15); z-index: 10; overflow: hidden;
+  }
+  /* overflow-wrap so a long unbroken value (an email, a URL) still breaks
+     rather than pushing past the column. */
+  body.wrap td { white-space: pre-wrap; overflow-wrap: anywhere; height: auto; min-height: 30px;
+    padding: 5px 6px; vertical-align: top; }
+  body.wrap td.rownum { padding: 5px 0; }
+
+  /* Cell text sits in its own box so it can be cut off after a set number of
+     lines. A <td> can't be: a table cell always grows to its row's height, so
+     max-height on it is ignored. One line unless the column asks for more —
+     --lines is set per column by render(). */
+  td .cv { overflow: hidden; text-overflow: ellipsis; }
+  body.wrap td .cv { display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--lines, 1); line-clamp: var(--lines, 1); }
+  /* A phone number or door code breaks between its groups, never mid-digit —
+     "+1 (425) 275-" over two lines reads as a different number. */
+  body.wrap td.atomic .cv { overflow-wrap: normal; word-break: keep-all; }
+
+  /* ---- tag chips ----
+     A column marked `tag` prints each distinct value as a coloured pill, so a
+     name is picked out by shape and colour at a glance instead of read. The
+     name stays inside the pill: colour is never the only thing carrying it,
+     which is what keeps this legible to a colourblind reader and in print.
+
+     Five hues, assigned in tag-slot order (see tagSlots below), from a palette
+     validated all-pairs against this light surface — worst pair ΔE 13.0 under
+     protanopia, 16.3 with normal vision. A sixth distinct value takes the grey
+     chip rather than a made-up sixth hue; the name still reads. Each ink is
+     darkened against its own 14% tint to clear 6.9:1, so the text is the
+     contrast, not the colour. */
+  .chip { display: inline-block; max-width: 100%; padding: 0.05rem 0.4rem; border-radius: 999px;
+    font-size: 0.76rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis;
+    vertical-align: baseline; background: #f1f3f4; color: #5f6368; }
+  .chip.tag-0 { background: #e1ecf9; color: #18467c; }
+  .chip.tag-1 { background: #fcf2db; color: #6b4800; }
+  .chip.tag-2 { background: #fcedf2; color: #794055; }
+  .chip.tag-3 { background: #dbeedb; color: #005100; }
+  .chip.tag-4 { background: #e6e3f3; color: #342975; }
+
+  /* Named colours, for a column where particular values were asked for by
+     colour (`tagValues`) rather than handed one from the palette above. These
+     are solid rather than tinted: the colour was named literally, and a column
+     of outcomes wants the handful that matter to carry across the grid while
+     everything else stays plain text. Each carries its own text colour to
+     4.9:1 or better. Adding a colour here means adding a rule below and
+     nothing else. */
+  .chip.val-black     { background: #1f2933; color: #ffffff; }
+  .chip.val-yellow    { background: #f2c200; color: #3d2b00; }
+  .chip.val-red       { background: #c62828; color: #ffffff; }
+  .chip.val-green     { background: #1e7d32; color: #ffffff; }
+  .chip.val-lightblue { background: #a8daf2; color: #0b4a63; }
+  .chip.val-purple    { background: #6b21a8; color: #ffffff; }
+  .chip.val-darkblue  { background: #1e3a8a; color: #ffffff; }
+
+  /* ---- context menu ---- */
+  #menu {
+    position: fixed; z-index: 50; background: #fff; border: 1px solid #dadce0; border-radius: 6px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.18); padding: 4px 0; min-width: 190px; display: none;
+  }
+  #menu button {
+    display: block; width: 100%; border: none; background: none; border-radius: 0;
+    text-align: left; padding: 0.45rem 0.9rem; font-size: 0.82rem;
+  }
+  #menu button:hover { background: #f1f3f4; }
+  #menu .sep { height: 1px; background: #e6e6e6; margin: 4px 0; }
+  #menu button.danger { color: #b3261e; }
+  .hint { padding: 0.4rem 1rem; font-size: 0.72rem; color: #80868b; background: #fff; border-top: 1px solid #e6e6e6; flex: none; }
+  .hint kbd { background: #f1f3f4; border: 1px solid #dadce0; border-bottom-width: 2px;
+    border-radius: 3px; padding: 0 4px; font: inherit; font-size: 0.7rem; }
+
+  /* ---- phones ----
+     Column widths and line counts are worked out in render(); this is the rest
+     of the room-making. Keep 640px in step with NARROW_MAX in the script. */
+  @media (max-width: 640px) {
+    th.rownum, td.rownum { width: 34px; min-width: 34px; font-size: 0.68rem; }
+    #search { width: 100%; order: 10; }
+    .toolbar { padding: 0.5rem 0.6rem; gap: 0.4rem; }
+    .app-nav { padding: 0.6rem 0.7rem; gap: 0.9rem; }
+    /* The spacer would push the tabs off-screen in a scrolling bar, and the
+       source link is the least useful thing on a phone. */
+    .app-nav .spacer, .app-nav .src { display: none; }
+    /* Keyboard shortcuts are no use on a touch screen, and the bar costs two
+       lines of the grid. */
+    .hint { display: none; }
+  }
+</style>
+<style id="col-lines"></style>
+</head>
+<body data-sheet="__ACTIVE_SHEET__">
+<!-- The links and the signed-in user are stamped in by renderSheet() in
+     server.ts, so every page carries the same bar and one sheet's tab is
+     marked active. -->
+<nav class="app-nav">
+  <!--NAV_LINKS-->
+  <span class="spacer"></span>
+  <!--NAV_SOURCE-->
+  <!--NAV_USER-->
+</nav>
+
+<div class="toolbar">
+  <input id="search" type="search" placeholder="Search this sheet" autocomplete="off" />
+  <span class="rowcount" id="rowcount"></span>
+  <button id="add-row">+ Row</button>
+  <button id="add-col">+ Column</button>
+  <label class="wrap"><input type="checkbox" id="wrap" checked /> Wrap text</label>
+  <span class="spacer"></span>
+  <button id="undo" title="Ctrl+Z">Undo</button>
+  <button id="redo" title="Ctrl+Shift+Z">Redo</button>
+  <button id="csv">Download CSV</button>
+  <span class="status" id="status">Loading…</span>
+</div>
+
+<div class="grid-wrap" id="wrap-el" tabindex="0"><table id="grid"></table></div>
+<div class="hint">
+  <kbd>Enter</kbd> edit &middot; <kbd>Esc</kbd> cancel &middot; <kbd>Tab</kbd>/arrows move &middot;
+  <kbd>Shift</kbd>+arrows select &middot; <kbd>Ctrl+C</kbd>/<kbd>V</kbd> copy &amp; paste &middot;
+  <kbd>Del</kbd> clear &middot; <kbd>Ctrl+Z</kbd> undo &middot; drag a column header to reorder &middot;
+  drag a column edge to resize, or double-click it to fit the contents &middot;
+  right-click a column header for an exact width &middot; changes save automatically
+</div>
+<div id="menu"></div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const gridEl = $("grid"), wrapEl = $("wrap-el"), statusEl = $("status"), menuEl = $("menu");
+
+let doc = { sheets: [] };
+let si = 0;                                  // active sheet index
+let sel = { vr: 0, c: 0, avr: 0, ac: 0 };    // focus (vr,c) + anchor (avr,ac); vr = visible row position
+let editing = null;                          // {vr, c} while a cell is open for editing
+let query = "";
+let visible = [];                            // visible row position -> real row index
+let undoStack = [], redoStack = [];
+let dragging = false;
+
+const sheet = () => doc.sheets[si];
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const attr = (s) => esc(s).replace(/"/g, "&quot;");
+
+/* ---------------- how a cell is shown ---------------- */
+
+/**
+ * Cells display a tidied version of what they hold. The sheet still stores every
+ * value exactly as it was imported or typed — opening a cell to edit it, search,
+ * copy and the CSV export all see the full text — and these rules only shorten
+ * what the grid paints. Where they shorten something, the cell's tooltip carries
+ * the original.
+ *
+ * Which rule applies comes from the column's `type`, so it travels with the
+ * sheet rather than being pinned to a column name that someone may rename.
+ */
+
+/* Uppercase only, so a lowercase word ("in", "or", "me") can't be mistaken for
+   a state abbreviation. Every address in this sheet writes them in caps. */
+const STATE = "A[KLRZ]|C[AOT]|D[CE]|FL|GA|HI|I[ADLN]|K[SY]|LA|M[ADEINOST]|N[CDEHJMVY]|O[HKR]|P[AR]|RI|S[CD]|T[NX]|UT|V[AT]|W[AIVY]";
+const COUNTRY_TAIL = /[,\s]+(?:U\.?S\.?A\.?|United States(?: of America)?)\s*$/i;
+const STATE_BEFORE_ZIP = new RegExp("([,\\s])(?:" + STATE + ")\\s+(\\d{5}(?:-\\d{4})?)");
+const STATE_TAIL = new RegExp("[,\\s]+(?:" + STATE + ")\\s*$");
+
+/** "12 Example Ave NE, Springfield, ST 12345, USA" -> "12 Example Ave NE, Springfield, 12345" */
+function shortAddress(text) {
+  return text
+    .replace(COUNTRY_TAIL, "")
+    .replace(STATE_BEFORE_ZIP, "$1$2")
+    .replace(STATE_TAIL, "");
+}
+
+/** "2026-07-27" -> "26-07-27". Anything not in that shape is left alone. */
+/**
+ * Dates are stored ISO (`2026-07-29`) so that the plain string sort in `sortBy`
+ * is also a chronological one. Only the display is shortened: `26-07-29` by
+ * default, or `07.29.26` on a column asking for `format: "MM.DD.YY"`.
+ */
+function shortDate(text, col) {
+  const t = text.trim();
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (!iso) return text;
+  const [, year, month, day] = iso;
+  if (col && col.format === "MM.DD.YY") return `${month}.${day}.${year.slice(2)}`;
+  return t.slice(2);
+}
+
+/**
+ * The other half of the ISO rule above: a date typed into the grid is stored
+ * ISO whatever shape it was typed in. Without this a column displaying
+ * `MM.DD.YY` collects what it shows — someone matching the column's own style
+ * types `08.03.26`, it is kept verbatim, and the column no longer sorts, since
+ * `08.03.26` string-compares below every `2026-…`.
+ *
+ * A day-first date can't be told from a month-first one (`03.08.26` is either),
+ * so two-part-then-year is always read US-style, month first — which is how
+ * this sheet's dates are written and what its `MM.DD.YY` display shows back.
+ * A four-digit leading number is year-first instead, the one unambiguous case.
+ * Anything else — "TBD", "next week", a half-typed date — is left exactly as
+ * typed rather than guessed at.
+ */
+const YMD = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/;
+const MDY = /^(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})$/;
+
+function parseDateInput(value) {
+  const text = String(value ?? "").trim();
+  let year, month, day;
+  const ymd = YMD.exec(text);
+  if (ymd) [, year, month, day] = ymd;
+  else {
+    const mdy = MDY.exec(text);
+    if (!mdy) return null;
+    [, month, day, year] = mdy;
+    if (year.length === 3) return null;                 // 026: a typo, not a year
+    if (year.length === 2) year = String(2000 + Number(year));
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  const iso = `${year}-${pad(month)}-${pad(day)}`;
+  // Date rolls an impossible date forward (Feb 31 -> Mar 3) rather than
+  // failing, so the way to reject one is to see whether it survives the trip.
+  const parsed = new Date(`${iso}T00:00:00Z`);
+  if (isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) return null;
+  return iso;
+}
+
+/** What a typed or pasted value is stored as. Only date columns change. */
+function normalizeValue(value, col) {
+  if (!col || col.type !== "date") return value;
+  return parseDateInput(value) ?? value;
+}
+
+function displayValue(value, col) {
+  const text = String(value ?? "");
+  if (!text) return text;
+  if (col && col.type === "address") return shortAddress(text);
+  if (col && col.type === "date") return shortDate(text, col);
+  return text;
+}
+
+/* ---------------- tag chips ---------------- */
+
+/**
+ * Which colour each distinct value in a `tag` column gets. Values are sorted
+ * and handed slots in that order, so a colour follows the name rather than
+ * where its row happens to sit: searching, sorting or deleting rows can't
+ * repaint the ones that are left. Case and surrounding space are ignored, so
+ * "andy" and "Andy " are one person rather than two colours.
+ *
+ * Built from every row, not the visible ones, for the same reason.
+ *
+ * Marked on the column (`tag: true`) rather than matched by name, like the
+ * term shading below — a sheet's columns can be renamed from the page.
+ */
+const TAG_SLOTS = 5;
+const tagKey = (v) => String(v ?? "").trim().toLowerCase();
+
+/**
+ * The other way a column gets colour: `tagValues` names one per value, for a
+ * column where the colours mean something ("cancelled" is black on Tours &
+ * Prospects) rather than merely telling entries apart. A value the mapping
+ * doesn't name is left as plain text — the point of naming three outcomes is
+ * that they stand out from the rest, so chipping everything would undo it.
+ *
+ * The colours are the class suffixes of the .chip.val-* rules in the
+ * stylesheet; anything else is ignored rather than emitted as a dead class.
+ */
+const TAG_COLORS = ["black", "yellow", "red", "green", "lightblue", "purple", "darkblue"];
+
+function tagSlots(cols, rows) {
+  const map = new Map(); // column index -> Map(key -> chip class, or null for no chip)
+  cols.forEach((col, c) => {
+    const named = col && col.tagValues && typeof col.tagValues === "object" ? col.tagValues : null;
+    if (!col || (!col.tag && !named)) return;
+    const seen = new Set();
+    for (const row of rows) {
+      const key = tagKey(row[c]);
+      if (key) seen.add(key);
+    }
+    const by = new Map();
+    if (named) {
+      // Written in the column as whole values; matched the way every other
+      // value here is, so "Cancelled" and "cancelled " are the same outcome.
+      const wanted = new Map(Object.entries(named).map(([v, colour]) => [tagKey(v), colour]));
+      for (const key of seen) {
+        const colour = wanted.get(key);
+        by.set(key, TAG_COLORS.includes(colour) ? "val-" + colour : null);
+      }
+    } else {
+      [...seen].sort().forEach((key, i) => by.set(key, i < TAG_SLOTS ? "tag-" + i : ""));
+    }
+    map.set(c, by);
+  });
+  return map;
+}
+
+/** The map the grid is currently painted from, rebuilt by every render(). */
+let tagMap = new Map();
+
+/**
+ * The chip markup for a cell, or the plain text where the column isn't tagged.
+ * Keyed off the stored value rather than the shortened one on screen, so a
+ * chip and its colour survive a column that displays something abbreviated.
+ */
+function tagHtml(shown, raw, c) {
+  const by = tagMap.get(c);
+  if (!by || !shown) return esc(shown);
+  const cls = by.get(tagKey(raw));
+  // undefined: typed since the last redraw. null: a value this column's
+  // mapping doesn't colour. Both stay plain text.
+  if (cls === undefined || cls === null) return esc(shown);
+  return `<span class="chip${cls ? " " + cls : ""}">${esc(shown)}</span>`;
+}
+
+/* ---------------- lease terms ---------------- */
+
+/**
+ * Two date columns marked `range: "start"` and `range: "end"` are read as the
+ * two ends of one term, and both cells are shaded by where today sits in it:
+ * green while it is running, grey once it has ended, yellow before it begins.
+ * On Leases that makes an active lease findable without reading two dates in
+ * every row.
+ *
+ * Marked on the column rather than matched by name, for the same reason the
+ * display rules above are: a sheet's columns can be renamed from the page.
+ */
+const TERM_CLASSES = ["term-active", "term-past", "term-future"];
+
+/** The start/end column pair of a sheet, or null if it hasn't got one. */
+function termPair(cols) {
+  let start = -1, end = -1;
+  cols.forEach((c, i) => {
+    if (!c || c.type !== "date") return;
+    if (c.range === "start" && start < 0) start = i;
+    else if (c.range === "end" && end < 0) end = i;
+  });
+  return start >= 0 && end >= 0 ? { start, end } : null;
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/* Today where the person reading it is, not UTC — near midnight the two are
+   different days, and this is compared against dates typed in local terms.
+   Built as a string so it compares directly against the stored ISO values. */
+function todayISO() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Which shade a row's term gets, or "" for no shading — which is the answer
+ * whenever the pair doesn't describe a real term: a blank date, something that
+ * isn't an ISO date, or an end before its start. Both ends count as inside the
+ * term, so a lease is still active on its last day.
+ */
+function termClass(row, pair) {
+  const start = String(row[pair.start] ?? "").trim();
+  const end = String(row[pair.end] ?? "").trim();
+  if (!ISO_DATE.test(start) || !ISO_DATE.test(end) || end < start) return "";
+  const today = todayISO();
+  if (today < start) return "term-future";
+  if (today > end) return "term-past";
+  return "term-active";
+}
+
+/** Re-shades one row's term cells after an edit that didn't redraw the grid. */
+function repaintTerm(vr) {
+  const pair = termPair(sheet().columns);
+  if (!pair) return;
+  const cls = termClass(sheet().rows[visible[vr]], pair);
+  for (const c of [pair.start, pair.end]) {
+    const td = cellAt(vr, c);
+    if (!td) continue;
+    td.classList.remove(...TERM_CLASSES);
+    if (cls) td.classList.add(cls);
+  }
+}
+
+/* ---------------- phones ---------------- */
+
+/**
+ * The grid is built from fixed pixel widths chosen for a desktop, which on a
+ * phone leaves most columns too narrow to read. On a narrow screen every column
+ * is widened a little and given a second line, so a cell shows something useful
+ * instead of three words and an ellipsis.
+ *
+ * Widths are computed rather than styled, so this is measured here rather than
+ * left to a media query — the 640px below is the same breakpoint as the one in
+ * the stylesheet, and the two need to stay in step.
+ */
+const NARROW_MAX = 640;
+const NARROW_MIN_WIDTH = 130;   // no column narrower than this
+const NARROW_GROWTH = 1.25;     // and the rest a quarter wider
+const NARROW_MIN_LINES = 2;
+
+function isNarrow() {
+  const w = window.innerWidth || 0;
+  return w > 0 && w <= NARROW_MAX;
+}
+
+/**
+ * Types whose value is worth nothing in part: half a phone number or half a
+ * door code is not a shorter answer, it's a wrong one. On a phone these
+ * columns are widened to fit their longest value rather than by a flat
+ * proportion, and they break at spaces only, never mid-digit.
+ */
+const ATOMIC_TYPES = { phone: true, date: true, time: true, code: true, unit: true, datetime: true };
+
+const isAtomic = (col) => !!(col && ATOMIC_TYPES[col.type]);
+
+/* Measured with the grid's own font, so the fit is real rather than a guess at
+   how wide a digit is. The fallback only matters where canvas isn't available. */
+let measureCtx;
+function textWidth(text) {
+  if (measureCtx === undefined) {
+    try {
+      measureCtx = document.createElement("canvas").getContext("2d");
+      if (measureCtx) {
+        const style = window.getComputedStyle(gridEl);
+        measureCtx.font = `${style.fontSize || "13px"} ${style.fontFamily || "system-ui"}`;
+      }
+    } catch { measureCtx = null; }
+  }
+  if (measureCtx) return measureCtx.measureText(text).width;
+  return text.length * 7.3;
+}
+
+/** Width needed to show every value in a column in full, including padding. */
+function widestValue(col, index) {
+  let widest = 0;
+  for (const row of sheet().rows) {
+    const shown = displayValue(row[index], col);
+    if (shown) widest = Math.max(widest, textWidth(shown));
+  }
+  return Math.ceil(widest) + 14; // the cell's own left/right padding
+}
+
+/**
+ * How wide a column is drawn. On a phone no column is allowed to be wider than
+ * the screen — a cell you have to scroll sideways *through* is worse than a
+ * short one — so every widening is capped to what actually fits.
+ */
+function colWidth(col, narrow, index) {
+  const width = (col && col.width) || 130;
+  // An atomic column is never drawn narrower than its longest value, at any
+  // width. Below the breakpoint the flat widening usually covers that already;
+  // this is what keeps a number whole on the sizes in between — a tablet, or a
+  // phone held sideways — which get the desktop layout.
+  const floor = isAtomic(col) ? widestValue(col, index) : 0;
+  if (!narrow) return Math.max(width, floor);
+  const cap = Math.max(NARROW_MIN_WIDTH, Math.min(320, (window.innerWidth || 400) - 70));
+  return Math.min(cap, Math.max(NARROW_MIN_WIDTH, Math.round(width * NARROW_GROWTH), floor));
+}
+
+/** How many lines of a cell to show before cutting it off. */
+function linesFor(col, narrow) {
+  const n = parseInt(col && col.lines, 10);
+  const lines = n > 0 ? Math.min(n, 20) : 1;
+  return narrow ? Math.max(lines, NARROW_MIN_LINES) : lines;
+}
+
+/** Paints one cell, shortened for display, with the full value as its tooltip. */
+function paintCell(td, value, col, c) {
+  const shown = displayValue(value, col);
+  td.innerHTML = `<div class="cv">${tagHtml(shown, value, c)}</div>`;
+  if (shown !== String(value ?? "")) td.title = String(value ?? "");
+  else td.removeAttribute("title");
+}
+
+/* ---------------- data helpers ---------------- */
+
+function computeVisible() {
+  const rows = sheet().rows;
+  const q = query.trim().toLowerCase();
+  visible = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (!q || rows[i].some((v) => String(v).toLowerCase().includes(q))) visible.push(i);
+  }
+}
+
+function snapshot() {
+  undoStack.push(JSON.stringify({ si, columns: sheet().columns, rows: sheet().rows }));
+  if (undoStack.length > 60) undoStack.shift();
+  redoStack.length = 0;
+}
+
+function restore(json) {
+  const s = JSON.parse(json);
+  si = s.si;
+  doc.sheets[si].columns = s.columns;
+  doc.sheets[si].rows = s.rows;
+}
+
+function doUndo() {
+  if (!undoStack.length) return;
+  redoStack.push(JSON.stringify({ si, columns: sheet().columns, rows: sheet().rows }));
+  restore(undoStack.pop());
+  afterChange();
+}
+
+function doRedo() {
+  if (!redoStack.length) return;
+  undoStack.push(JSON.stringify({ si, columns: sheet().columns, rows: sheet().rows }));
+  restore(redoStack.pop());
+  afterChange();
+}
+
+/** Redraw for content that changed underneath us — no save follows. */
+function redraw() {
+  computeVisible();
+  sel.vr = clamp(sel.vr, 0, Math.max(0, visible.length - 1));
+  sel.avr = clamp(sel.avr, 0, Math.max(0, visible.length - 1));
+  sel.c = clamp(sel.c, 0, sheet().columns.length - 1);
+  sel.ac = clamp(sel.ac, 0, sheet().columns.length - 1);
+  render();
+}
+
+function afterChange() {
+  redraw();
+  markDirty();
+}
+
+function newRow() { return sheet().columns.map(() => ""); }
+
+/* ---------------- saving ----------------
+ *
+ * A page saves the one sheet it is showing, and says which `rev` it loaded
+ * with. The server refuses the save if that rev is behind — someone else has
+ * saved in the meantime — and hands back the current content instead of
+ * applying the write.
+ *
+ * Both halves of that matter, and both come from losing a day of tour entries
+ * on 2026-08-05: a page that had been open for seventeen hours saved its whole
+ * stale document, over sheets it wasn't even showing, and silently replaced
+ * work three other saves had added.
+ */
+
+let saveTimer = null, saving = false, pending = false;
+/** Are there edits the server hasn't accepted yet? */
+let dirty = false;
+/** rev per sheet id, as loaded or as returned by the last accepted save. */
+let revs = {};
+/** Set while a save has been refused as stale; holds the server's sheet. */
+let conflict = null;
+
+function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = "status " + (cls || ""); }
+/** Same, but for the one status that needs a clickable way out. */
+function setStatusHtml(html, cls) { statusEl.innerHTML = html; statusEl.className = "status " + (cls || ""); }
+
+function markDirty() {
+  dirty = true;
+  setStatus("Unsaved changes", "saving");
+  clearTimeout(saveTimer);
+  if (!conflict) saveTimer = setTimeout(save, 700);
+}
+
+/** What this page sends: the sheet on screen, and nothing else. */
+function savePayload() {
+  const s = sheet();
+  return { sheets: [{ id: s.id, name: s.name, columns: s.columns, rows: s.rows, rev: revs[s.id] ?? 0 }] };
+}
+
+async function save() {
+  if (saving) { pending = true; return; }
+  if (conflict) return;                 // paused until the person picks a way out
+  saving = true;
+  setStatus("Saving…", "saving");
+  try {
+    const res = await fetch("/api/sheets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(savePayload()),
+    });
+    if (res.status === 409) {
+      // Refused, not applied: our copy is behind. Nothing here is thrown away
+      // — the edits stay on screen until the person chooses what to do.
+      enterConflict(await res.json());
+      return;
+    }
+    if (!res.ok) {
+      // Retrying a signed-out request can never succeed, so say so plainly
+      // rather than looping on "Save failed". Edits stay in the page, and the
+      // next retry goes through once the session is back.
+      if (res.status === 401) {
+        // Your edits are still here; the retry loop picks them up the moment
+        // the session is valid again, so signing in is all that's needed.
+        setStatusHtml(
+          'Signed out — <a href="/login" target="_blank" rel="noopener">sign in</a>' +
+            ", then your changes save automatically",
+          "error"
+        );
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(save, 4000);
+        return;
+      }
+      if (res.status === 403) {
+        // Not a session problem: the origin check refused the request. Retrying
+        // won't help until the page is reopened on the address it was served from.
+        setStatus("Save blocked (403) — reopen this page from the same address you signed in on", "error");
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(save, 4000);
+        return;
+      }
+      const detail = (await res.text()).slice(0, 120);
+      throw new Error(`HTTP ${res.status}${detail ? " — " + detail : ""}`);
+    }
+    const body = await res.json().catch(() => ({}));
+    if (body.revs) Object.assign(revs, body.revs);
+    if (!pending) dirty = false;
+    setStatus("All changes saved", "saved");
+  } catch (err) {
+    // Include the reason: a bare "Save failed" gives nothing to act on.
+    setStatus(`Save failed (${err.message || err}) — retrying`, "error");
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 4000);
+  } finally {
+    saving = false;
+    if (pending) { pending = false; markDirty(); }
+  }
+}
+
+addEventListener("pagehide", () => {
+  // Carries the rev like any other save, so a page that has gone stale in a
+  // forgotten tab can't dump its old copy over everyone's work on the way out.
+  // That is exactly how 2026-08-05's entries were lost.
+  if (dirty && !conflict) {
+    fetch("/api/sheets", {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(savePayload()), keepalive: true,
+    });
+  }
+});
+
+/* ---------------- when two people save the same sheet ---------------- */
+
+const rowKey = (row) => JSON.stringify(row.map((v) => String(v ?? "").trim()));
+const isBlank = (row) => row.every((v) => !String(v ?? "").trim());
+
+/** Rows of `mine` that `theirs` hasn't got, counting duplicates properly. */
+function rowsMissingFrom(mine, theirs) {
+  const pool = new Map();
+  for (const row of theirs) pool.set(rowKey(row), (pool.get(rowKey(row)) || 0) + 1);
+  const out = [];
+  for (const row of mine) {
+    if (isBlank(row)) continue;                 // an empty row is not work
+    const k = rowKey(row), have = pool.get(k) || 0;
+    if (have) pool.set(k, have - 1);
+    else out.push(row);
+  }
+  return out;
+}
+
+/**
+ * The server refused our save because someone else got there first. Nothing has
+ * been written and nothing on screen is discarded — the two ways out are both
+ * one click, and neither is taken automatically.
+ */
+function enterConflict(body) {
+  const s = sheet();
+  const theirs = (body.sheets || []).find((x) => x.id === s.id);
+  if (!theirs) {
+    setStatus("Save refused — this sheet isn't on the server any more", "error");
+    return;
+  }
+  conflict = theirs;
+  clearTimeout(saveTimer);
+  const extra = rowsMissingFrom(s.rows, theirs.rows).length;
+  setStatusHtml(
+    `Someone else saved this sheet — <b>your changes are not saved</b>. ` +
+      `<button id="keep-both">Keep both${extra ? ` (adds my ${extra} row${extra === 1 ? "" : "s"})` : ""}</button>` +
+      `<button id="keep-mine">Mine wins</button>`,
+    "error"
+  );
+  $("keep-both").onclick = () => resolveConflict("both");
+  $("keep-mine").onclick = () => resolveConflict("mine");
+}
+
+/**
+ * "Keep both" takes their sheet and appends the rows only we have, which is the
+ * right answer for the way this sheet is actually used — two people adding
+ * tours. "Mine wins" keeps ours; their version isn't gone either way, since
+ * every saved state is kept in `sheet_versions`.
+ */
+function resolveConflict(choice) {
+  const theirs = conflict;
+  if (!theirs) return;
+  const s = sheet();
+  if (choice === "both") {
+    const width = theirs.columns.length;
+    const extra = rowsMissingFrom(s.rows, theirs.rows)
+      .map((row) => Array.from({ length: width }, (_, i) => row[i] ?? ""));
+    s.columns = theirs.columns;
+    s.rows = theirs.rows.concat(extra);
+  }
+  revs[s.id] = theirs.rev;
+  conflict = null;
+  // The undo stack describes a document that no longer exists; stepping back
+  // into it would reintroduce what we just reconciled.
+  undoStack.length = 0;
+  redoStack.length = 0;
+  afterChange();
+}
+
+/**
+ * A page that sits open for hours is how a copy goes stale in the first place,
+ * so it catches up whenever it comes back to the foreground — but only when
+ * there's nothing unsaved and nothing being typed, so this can never take an
+ * edit away from under someone.
+ */
+async function refreshIfIdle() {
+  if (document.visibilityState !== "visible" || conflict || saving || dirty || editing) return;
+  try {
+    const res = await fetch("/api/sheets", { headers: { "Cache-Control": "no-cache" } });
+    if (!res.ok) return;
+    const fresh = (await res.json()).sheets.find((x) => x.id === sheet().id);
+    if (!fresh || fresh.rev === revs[sheet().id]) return;
+    if (conflict || saving || dirty || editing) return;   // it may have changed while we waited
+    doc.sheets[si] = fresh;
+    revs[fresh.id] = fresh.rev;
+    redraw();
+    setStatus("Updated — someone else had saved changes", "saved");
+  } catch { /* offline or signed out; the next save says so properly */ }
+}
+
+addEventListener("visibilitychange", refreshIfIdle);
+addEventListener("focus", refreshIfIdle);
+
+/* ---------------- rendering ---------------- */
+
+function render() {
+  const s = sheet();
+  const cols = s.columns;
+
+  const narrow = isNarrow();
+  let html = `<colgroup><col style='width:${narrow ? 34 : 46}px'>`;
+  cols.forEach((c, i) => { html += `<col style="width:${colWidth(c, narrow, i)}px">`; });
+  html += "</colgroup><thead><tr><th class='rownum corner'></th>";
+  cols.forEach((c, i) => {
+    const dir = c.sort;
+    html += `<th data-c="${i}" draggable="true"
+      title="${esc(c.name)} — double-click to rename, drag to reorder; right-click for width">
+      <span class="label">${esc(c.name)}</span>
+      <span class="sort${dir ? " on" : ""}" data-sort="${i}">${dir === "desc" ? "▼" : "▲"}</span>
+      <span class="resizer" data-resize="${i}"></span></th>`;
+  });
+  html += "</tr></thead><tbody>";
+
+  const rows = s.rows;
+  const pair = termPair(cols);
+  tagMap = tagSlots(cols, rows);
+  for (let vr = 0; vr < visible.length; vr++) {
+    const r = visible[vr];
+    const term = pair ? termClass(rows[r], pair) : "";
+    html += `<tr><td class="rownum" data-row="${vr}">${r + 1}</td>`;
+    for (let c = 0; c < cols.length; c++) {
+      const raw = rows[r][c];
+      const shown = displayValue(raw, cols[c]);
+      // Only shortened cells get a tooltip, so hovering tells you when what you
+      // see isn't the whole value.
+      const tip = shown !== String(raw ?? "") ? ` title="${attr(raw)}"` : "";
+      const classes = [];
+      if (isAtomic(cols[c])) classes.push("atomic");
+      if (term && pair && (c === pair.start || c === pair.end)) classes.push(term);
+      const cls = classes.length ? ` class="${classes.join(" ")}"` : "";
+      html += `<td data-vr="${vr}" data-c="${c}"${cls}${tip}><div class="cv">${tagHtml(shown, raw, c)}</div></td>`;
+    }
+    html += "</tr>";
+  }
+  if (!visible.length) {
+    html += `<tr><td class="rownum"></td><td colspan="${cols.length}" style="color:#80868b">
+      ${query ? "No rows match “" + esc(query) + "”" : "No rows yet — click “+ Row”."}</td></tr>`;
+  }
+  html += "</tbody>";
+  gridEl.innerHTML = html;
+
+  // One rule per column that wants more than a single line.
+  $("col-lines").textContent = cols
+    .map((c, i) => {
+      const n = linesFor(c, narrow);
+      return n === 1 ? "" : `#grid td[data-c="${i}"] .cv{--lines:${n}}`;
+    })
+    .join("");
+
+  $("rowcount").textContent = query
+    ? `${visible.length} of ${rows.length} rows`
+    : `${rows.length} rows`;
+  $("undo").disabled = !undoStack.length;
+  $("redo").disabled = !redoStack.length;
+  paintSelection();
+}
+
+function selRange() {
+  return {
+    r0: Math.min(sel.vr, sel.avr), r1: Math.max(sel.vr, sel.avr),
+    c0: Math.min(sel.c, sel.ac), c1: Math.max(sel.c, sel.ac),
+  };
+}
+
+function paintSelection() {
+  const { r0, r1, c0, c1 } = selRange();
+  for (const td of gridEl.querySelectorAll("td[data-vr]")) {
+    const vr = +td.dataset.vr, c = +td.dataset.c;
+    const inRange = vr >= r0 && vr <= r1 && c >= c0 && c <= c1;
+    td.classList.toggle("sel", inRange && !(vr === sel.vr && c === sel.c));
+    td.classList.toggle("focus", vr === sel.vr && c === sel.c && !editing);
+  }
+}
+
+function cellAt(vr, c) { return gridEl.querySelector(`td[data-vr="${vr}"][data-c="${c}"]`); }
+
+function scrollIntoView() {
+  const td = cellAt(sel.vr, sel.c);
+  if (td) td.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/* ---------------- selection & navigation ---------------- */
+
+function moveTo(vr, c, extend) {
+  sel.vr = clamp(vr, 0, Math.max(0, visible.length - 1));
+  sel.c = clamp(c, 0, sheet().columns.length - 1);
+  if (!extend) { sel.avr = sel.vr; sel.ac = sel.c; }
+  paintSelection();
+  scrollIntoView();
+}
+
+function move(dr, dc, extend) {
+  commitEdit();
+  moveTo(sel.vr + dr, sel.c + dc, extend);
+}
+
+/* ---------------- editing ---------------- */
+
+function beginEdit(initial) {
+  if (!visible.length) return;
+  const td = cellAt(sel.vr, sel.c);
+  if (!td) return;
+  editing = { vr: sel.vr, c: sel.c };
+  const current = sheet().rows[visible[sel.vr]][sel.c];
+  td.classList.add("editing");
+  td.classList.remove("focus", "sel");
+  td.innerHTML = "<textarea spellcheck='false'></textarea>";
+  const ta = td.firstChild;
+  ta.value = initial !== undefined ? initial : current;
+  const grow = () => { ta.style.height = "auto"; ta.style.height = Math.max(ta.scrollHeight, 30) + "px"; };
+  ta.addEventListener("input", grow);
+  ta.addEventListener("blur", () => commitEdit());
+  ta.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); cancelEdit(); }
+    else if (e.key === "Enter" && !e.shiftKey && !e.altKey) { e.preventDefault(); commitEdit(); move(1, 0, false); }
+    else if (e.key === "Tab") { e.preventDefault(); commitEdit(); move(0, e.shiftKey ? -1 : 1, false); }
+    e.stopPropagation();
+  });
+  ta.focus();
+  if (initial !== undefined) ta.setSelectionRange(ta.value.length, ta.value.length);
+  else ta.select();
+  grow();
+}
+
+function commitEdit() {
+  if (!editing) return;
+  const td = cellAt(editing.vr, editing.c);
+  const ta = td && td.querySelector("textarea");
+  const { vr, c } = editing;
+  editing = null;
+  if (!ta) return;
+  const value = normalizeValue(ta.value, sheet().columns[c]);
+  const r = visible[vr];
+  if (sheet().rows[r][c] !== value) {
+    snapshot();
+    sheet().rows[r][c] = value;
+    markDirty();
+  }
+  td.classList.remove("editing");
+  // A value typed into a coloured column for the first time has no chip yet,
+  // and on a `tag` column handing it one can renumber the slots above it —
+  // that's a redraw, not a cell repaint.
+  if (tagMap.has(c) && !tagMap.get(c).has(tagKey(value))) {
+    render();
+    paintSelection();
+    wrapEl.focus();
+    return;
+  }
+  paintCell(td, value, sheet().columns[c], c);
+  // Editing one end of a term changes the shading on both of its cells, and
+  // this is the one edit path that doesn't redraw the whole grid.
+  repaintTerm(vr);
+  paintSelection();
+  wrapEl.focus();
+}
+
+function cancelEdit() {
+  if (!editing) return;
+  const td = cellAt(editing.vr, editing.c);
+  const { vr, c } = editing;
+  editing = null;
+  if (td) {
+    td.classList.remove("editing");
+    paintCell(td, sheet().rows[visible[vr]][c], sheet().columns[c], c);
+  }
+  paintSelection();
+  wrapEl.focus();
+}
+
+/* ---------------- row / column operations ---------------- */
+
+function insertRow(at) {
+  snapshot();
+  sheet().rows.splice(at, 0, newRow());
+  afterChange();
+}
+
+function deleteRows(r0, r1) {
+  snapshot();
+  const targets = [];
+  for (let vr = r0; vr <= r1; vr++) targets.push(visible[vr]);
+  targets.sort((a, b) => b - a).forEach((r) => sheet().rows.splice(r, 1));
+  afterChange();
+}
+
+function addColumn(at, name) {
+  snapshot();
+  sheet().columns.splice(at, 0, { name: name, type: "text", width: 140 });
+  for (const row of sheet().rows) row.splice(at, 0, "");
+  afterChange();
+}
+
+function deleteColumn(c) {
+  if (sheet().columns.length <= 1) return;
+  snapshot();
+  sheet().columns.splice(c, 1);
+  for (const row of sheet().rows) row.splice(c, 1);
+  afterChange();
+}
+
+function sortBy(c, dir) {
+  snapshot();
+  const col = sheet().columns[c];
+  const blank = (v) => v === "" || v === null || v === undefined;
+  // A date sorts on the ISO form of what it holds, not on the text itself, so a
+  // row still lands in the right place if some other shape reaches the column —
+  // an older row, or a paste from somewhere that doesn't go through
+  // normalizeValue(). Values that aren't dates at all fall through to the
+  // ordinary text comparison below.
+  const key = (v) => (col && col.type === "date" ? parseDateInput(v) ?? v : v);
+  sheet().rows.sort((a, b) => {
+    const x = key(a[c]), y = key(b[c]);
+    if (blank(x) && blank(y)) return 0;
+    if (blank(x)) return 1;              // blanks always sink to the bottom
+    if (blank(y)) return -1;
+    const nx = Number(String(x).replace(/[$,]/g, "")), ny = Number(String(y).replace(/[$,]/g, ""));
+    const cmp = (!isNaN(nx) && !isNaN(ny))
+      ? nx - ny
+      : String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: "base" });
+    return dir === "desc" ? -cmp : cmp;
+  });
+  sheet().columns.forEach((col, i) => { if (i !== c) delete col.sort; });
+  sheet().columns[c].sort = dir;
+  afterChange();
+}
+
+/* ---------------- clipboard ---------------- */
+
+function rangeAsTsv() {
+  const { r0, r1, c0, c1 } = selRange();
+  const out = [];
+  for (let vr = r0; vr <= r1; vr++) {
+    const row = sheet().rows[visible[vr]];
+    const cells = [];
+    for (let c = c0; c <= c1; c++) {
+      let v = String(row[c] ?? "");
+      if (/[\t\n"]/.test(v)) v = '"' + v.replace(/"/g, '""') + '"';
+      cells.push(v);
+    }
+    out.push(cells.join("\t"));
+  }
+  return out.join("\n");
+}
+
+function parseTsv(text) {
+  // Splits on tabs/newlines while respecting "quoted cells" that contain them.
+  const rows = [[]];
+  let cell = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else cell += ch;
+    } else if (ch === '"' && cell === "") quoted = true;
+    else if (ch === "\t") { rows[rows.length - 1].push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      rows[rows.length - 1].push(cell); cell = ""; rows.push([]);
+    } else cell += ch;
+  }
+  rows[rows.length - 1].push(cell);
+  if (rows.length && rows[rows.length - 1].every((c) => c === "")) rows.pop();
+  return rows;
+}
+
+function pasteTsv(text) {
+  const block = parseTsv(text);
+  if (!block.length) return;
+  snapshot();
+  const s = sheet();
+  const startVr = Math.min(sel.vr, sel.avr), startC = Math.min(sel.c, sel.ac);
+  for (let i = 0; i < block.length; i++) {
+    let r = visible[startVr + i];
+    if (r === undefined) { s.rows.push(newRow()); r = s.rows.length - 1; }  // paste can grow the sheet
+    for (let j = 0; j < block[i].length; j++) {
+      const c = startC + j;
+      if (c < s.columns.length) s.rows[r][c] = normalizeValue(block[i][j], s.columns[c]);
+    }
+  }
+  afterChange();
+  moveTo(startVr, startC, false);
+}
+
+function clearRange() {
+  const { r0, r1, c0, c1 } = selRange();
+  snapshot();
+  for (let vr = r0; vr <= r1; vr++)
+    for (let c = c0; c <= c1; c++) sheet().rows[visible[vr]][c] = "";
+  render();
+  markDirty();
+}
+
+/* ---------------- context menu ---------------- */
+
+function showMenu(x, y, items) {
+  menuEl.innerHTML = items
+    .map((it) => (it === "-" ? "<div class='sep'></div>"
+      : `<button data-act="${it.act}"${it.danger ? " class='danger'" : ""}>${esc(it.label)}</button>`))
+    .join("");
+  menuEl.style.display = "block";
+  menuEl.style.left = Math.min(x, innerWidth - menuEl.offsetWidth - 8) + "px";
+  menuEl.style.top = Math.min(y, innerHeight - menuEl.offsetHeight - 8) + "px";
+  menuEl.onclick = (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    hideMenu();
+    const action = items.find((it) => it !== "-" && it.act === btn.dataset.act);
+    if (action) action.run();
+  };
+}
+
+function hideMenu() { menuEl.style.display = "none"; }
+addEventListener("mousedown", (e) => { if (!menuEl.contains(e.target)) hideMenu(); }, true);
+addEventListener("scroll", hideMenu, true);
+
+/* ---------------- events ---------------- */
+
+gridEl.addEventListener("mousedown", (e) => {
+  const td = e.target.closest("td[data-vr]");
+  if (td) {
+    if (editing && +td.dataset.vr === editing.vr && +td.dataset.c === editing.c) return;
+    e.preventDefault();
+    commitEdit();
+    wrapEl.focus();
+    if (e.button === 2) {                       // right-click keeps an existing multi-cell selection
+      const { r0, r1, c0, c1 } = selRange();
+      const vr = +td.dataset.vr, c = +td.dataset.c;
+      if (!(vr >= r0 && vr <= r1 && c >= c0 && c <= c1)) moveTo(vr, c, false);
+      return;
+    }
+    moveTo(+td.dataset.vr, +td.dataset.c, e.shiftKey);
+    dragging = true;
+    return;
+  }
+  const rownum = e.target.closest("td.rownum[data-row]");
+  if (rownum && e.button !== 2) {                // click the row number to select the whole row
+    e.preventDefault();
+    commitEdit();
+    wrapEl.focus();
+    const vr = +rownum.dataset.row;
+    sel = { vr, c: 0, avr: vr, ac: sheet().columns.length - 1 };
+    paintSelection();
+  }
+});
+
+gridEl.addEventListener("mouseover", (e) => {
+  if (!dragging) return;
+  const td = e.target.closest("td[data-vr]");
+  if (td) moveTo(+td.dataset.vr, +td.dataset.c, true);
+});
+addEventListener("mouseup", () => { dragging = false; });
+
+gridEl.addEventListener("dblclick", (e) => {
+  const td = e.target.closest("td[data-vr]");
+  if (td) { moveTo(+td.dataset.vr, +td.dataset.c, false); beginEdit(); return; }
+  // Double-clicking the resize handle fits the column to what's in it. Typing
+  // an exact number of pixels is still on the right-click menu, for the times
+  // that's what you actually want.
+  const handle = e.target.closest(".resizer");
+  if (handle) { e.stopPropagation(); fitColumn(+handle.dataset.resize); return; }
+  const th = e.target.closest("thead th[data-c]");
+  if (th) {
+    const c = +th.dataset.c;
+    const name = prompt("Column name:", sheet().columns[c].name);
+    if (name !== null && name !== sheet().columns[c].name) {
+      snapshot();
+      sheet().columns[c].name = name;
+      afterChange();
+    }
+  }
+});
+
+gridEl.addEventListener("click", (e) => {
+  const sortEl = e.target.closest(".sort");
+  if (!sortEl) return;
+  const c = +sortEl.dataset.sort;
+  sortBy(c, sheet().columns[c].sort === "asc" ? "desc" : "asc");
+});
+
+gridEl.addEventListener("contextmenu", (e) => {
+  const rownum = e.target.closest("td.rownum[data-row]");
+  const th = e.target.closest("thead th[data-c]");
+  const td = e.target.closest("td[data-vr]");
+  if (rownum || td) {
+    e.preventDefault();
+    const vr = rownum ? +rownum.dataset.row : +td.dataset.vr;
+    if (rownum) { sel = { vr, c: 0, avr: vr, ac: sheet().columns.length - 1 }; paintSelection(); }
+    const { r0, r1 } = selRange();
+    const count = r1 - r0 + 1;
+    showMenu(e.clientX, e.clientY, [
+      { act: "above", label: "Insert row above", run: () => insertRow(visible[r0]) },
+      { act: "below", label: "Insert row below", run: () => insertRow(visible[r1] + 1) },
+      "-",
+      { act: "clear", label: "Clear contents", run: clearRange },
+      { act: "del", label: count > 1 ? `Delete ${count} rows` : "Delete row", danger: true,
+        run: () => deleteRows(r0, r1) },
+    ]);
+    return;
+  }
+  if (th) {
+    e.preventDefault();
+    const c = +th.dataset.c;
+    showMenu(e.clientX, e.clientY, [
+      { act: "asc", label: "Sort A → Z", run: () => sortBy(c, "asc") },
+      { act: "desc", label: "Sort Z → A", run: () => sortBy(c, "desc") },
+      "-",
+      { act: "rename", label: "Rename column…", run: () => {
+          const name = prompt("Column name:", sheet().columns[c].name);
+          if (name !== null) { snapshot(); sheet().columns[c].name = name; afterChange(); }
+        } },
+      { act: "fit", label: "Fit column to contents", run: () => fitColumn(c) },
+      { act: "fitall", label: "Fit all columns", run: fitAllColumns },
+      { act: "width", label: "Column width…", run: () => promptColumnWidth(c) },
+      { act: "left", label: "Insert column left", run: () => addColumn(c, "New column") },
+      { act: "right", label: "Insert column right", run: () => addColumn(c + 1, "New column") },
+      "-",
+      // Same as dragging the header, for anyone who'd rather not drag.
+      { act: "moveleft", label: "Move column left", run: () => moveColumn(c, c - 1) },
+      { act: "moveright", label: "Move column right", run: () => moveColumn(c, c + 1) },
+      "-",
+      { act: "delcol", label: "Delete column", danger: true, run: () => deleteColumn(c) },
+    ]);
+  }
+});
+
+/** Set a column's width to an exact number of pixels. */
+const MIN_COL_WIDTH = 48, MAX_COL_WIDTH = 2000;
+
+/* A fitted column is capped well short of MAX_COL_WIDTH: one long comment
+   shouldn't push every other column off the screen to fit itself. Past this
+   the cell wraps or ellipsises as it did before. */
+const FIT_MAX_WIDTH = 420;
+
+/**
+ * Size a column to its contents — the gesture every spreadsheet puts on a
+ * double-click of the column edge, and the one that saves aiming at a target
+ * at all. The header has to fit too, or fitting a column of short values
+ * clips its own name.
+ */
+function fitColumn(c) {
+  const col = sheet().columns[c];
+  if (!col) return;
+  const header = Math.ceil(textWidth(col.name)) + 34; // padding, plus room for the sort arrow
+  const wanted = Math.max(widestValue(col, c), header);
+  const w = Math.max(MIN_COL_WIDTH, Math.min(FIT_MAX_WIDTH, wanted));
+  if (w === Math.round(col.width || 130)) return;
+  snapshot();
+  col.width = w;
+  afterChange();
+}
+
+/** The whole sheet at once — one undo step, not one per column. */
+function fitAllColumns() {
+  const cols = sheet().columns;
+  const widths = cols.map((col, c) =>
+    Math.max(MIN_COL_WIDTH, Math.min(FIT_MAX_WIDTH,
+      Math.max(widestValue(col, c), Math.ceil(textWidth(col.name)) + 34)))
+  );
+  if (widths.every((w, c) => w === Math.round(cols[c].width || 130))) return;
+  snapshot();
+  widths.forEach((w, c) => { cols[c].width = w; });
+  afterChange();
+}
+
+function promptColumnWidth(c) {
+  const col = sheet().columns[c];
+  const current = Math.round(col.width || 130);
+  const answer = prompt(`Width for “${col.name}” in pixels (${MIN_COL_WIDTH}–${MAX_COL_WIDTH}):`, String(current));
+  if (answer === null) return;
+
+  const w = Math.round(Number(String(answer).trim()));
+  if (!Number.isFinite(w) || w < MIN_COL_WIDTH || w > MAX_COL_WIDTH) {
+    alert(`Enter a whole number between ${MIN_COL_WIDTH} and ${MAX_COL_WIDTH}.`);
+    return;
+  }
+  if (w === current) return;
+
+  snapshot();                 // typed widths are undoable, unlike a live drag
+  col.width = w;
+  afterChange();
+}
+
+/* move a column, carrying every row's cell with it */
+function moveColumn(from, to) {
+  const s = sheet();
+  if (from === to || from < 0 || to < 0 || from >= s.columns.length || to >= s.columns.length) return;
+  snapshot();
+
+  // Ragged rows would lose cells to splice, so square them up first.
+  for (const row of s.rows) {
+    while (row.length < s.columns.length) row.push("");
+  }
+
+  const [col] = s.columns.splice(from, 1);
+  s.columns.splice(to, 0, col);
+  for (const row of s.rows) {
+    const [cell] = row.splice(from, 1);
+    row.splice(to, 0, cell === undefined ? "" : cell);
+  }
+
+  sel = { vr: sel.vr, c: to, avr: sel.avr, ac: to };
+  afterChange();
+}
+
+/* drag a header to reorder columns */
+let dragCol = null;
+
+/**
+ * dragstart fires on the draggable <th>, not on the descendant the mouse went
+ * down on, so the press target has to be remembered here instead. Capture phase
+ * because the resize handler calls stopPropagation().
+ */
+let pressedNoDrag = false;
+gridEl.addEventListener(
+  "mousedown",
+  (e) => { pressedNoDrag = !!e.target.closest(".resizer, .sort"); },
+  true
+);
+
+gridEl.addEventListener("dragstart", (e) => {
+  const th = e.target.closest("thead th[data-c]");
+  // Let the resize handle and the sort arrow keep their own behaviour.
+  if (!th || pressedNoDrag) {
+    e.preventDefault();
+    return;
+  }
+  dragCol = +th.dataset.c;
+  th.classList.add("dragging");
+  e.dataTransfer.effectAllowed = "move";
+  // Firefox only starts a drag when data is set.
+  e.dataTransfer.setData("text/plain", String(dragCol));
+});
+
+gridEl.addEventListener("dragover", (e) => {
+  if (dragCol === null) return;
+  const th = e.target.closest("thead th[data-c]");
+  if (!th) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+
+  const c = +th.dataset.c;
+  clearDropMarks();
+  if (c !== dragCol) th.classList.add(c > dragCol ? "drop-after" : "drop-before");
+});
+
+gridEl.addEventListener("drop", (e) => {
+  if (dragCol === null) return;
+  const th = e.target.closest("thead th[data-c]");
+  e.preventDefault();
+  if (th) moveColumn(dragCol, +th.dataset.c);
+  endColumnDrag();
+});
+
+gridEl.addEventListener("dragend", endColumnDrag);
+
+function clearDropMarks() {
+  for (const el of gridEl.querySelectorAll(".drop-before, .drop-after")) {
+    el.classList.remove("drop-before", "drop-after");
+  }
+}
+
+function endColumnDrag() {
+  dragCol = null;
+  clearDropMarks();
+  for (const el of gridEl.querySelectorAll(".dragging")) el.classList.remove("dragging");
+}
+
+/* Column resize by dragging the header edge.
+ *
+ * Pointer events rather than mouse ones, so the same handle works under a
+ * finger or a stylus — on a tablet the old mousedown/mousemove pair never
+ * fired and a column simply couldn't be resized. Capture keeps the drag alive
+ * when the pointer runs off the header, off the table, or out of the window,
+ * which is where a wide column has to be dragged to. */
+gridEl.addEventListener("pointerdown", (e) => {
+  const handle = e.target.closest(".resizer");
+  if (!handle || e.button !== 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const c = +handle.dataset.resize;
+  const th = handle.closest("th");
+  const col = gridEl.querySelectorAll("colgroup col")[c + 1];
+
+  // Belt and braces with the dragstart guard: a <th> that isn't draggable can't
+  // start a native drag at all, so the pointermove stream stays intact.
+  th.draggable = false;
+  handle.classList.add("active");
+  document.body.classList.add("col-resizing");
+  handle.setPointerCapture(e.pointerId);
+
+  // <col> has no layout box of its own, so measure the header cell.
+  const startX = e.clientX, startW = th.getBoundingClientRect().width;
+  let moved = false;
+
+  const onMove = (ev) => {
+    const w = Math.max(MIN_COL_WIDTH, Math.min(MAX_COL_WIDTH, Math.round(startW + ev.clientX - startX)));
+    // The undo entry is taken on the first movement, not on the press: a click
+    // that turns out not to drag shouldn't cost the user their last undo.
+    if (!moved) { snapshot(); moved = true; }
+    col.style.width = w + "px";
+    sheet().columns[c].width = w;
+    setStatus(sheet().columns[c].name + " — " + w + "px");
+  };
+  const onUp = () => {
+    handle.removeEventListener("pointermove", onMove);
+    handle.removeEventListener("pointerup", onUp);
+    handle.removeEventListener("pointercancel", onUp);
+    handle.classList.remove("active");
+    document.body.classList.remove("col-resizing");
+    th.draggable = true;
+    if (moved) markDirty(); // which puts its own message back over the readout
+  };
+  handle.addEventListener("pointermove", onMove);
+  handle.addEventListener("pointerup", onUp);
+  handle.addEventListener("pointercancel", onUp);
+});
+
+wrapEl.addEventListener("keydown", (e) => {
+  if (editing) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? doRedo() : doUndo(); return; }
+  if (mod && e.key.toLowerCase() === "y") { e.preventDefault(); doRedo(); return; }
+  if (mod && e.key.toLowerCase() === "f") { e.preventDefault(); $("search").focus(); return; }
+  if (mod && e.key.toLowerCase() === "a") {
+    e.preventDefault();
+    sel = { vr: 0, c: 0, avr: Math.max(0, visible.length - 1), ac: sheet().columns.length - 1 };
+    paintSelection();
+    return;
+  }
+  if (mod) return;
+
+  switch (e.key) {
+    case "ArrowUp": e.preventDefault(); move(-1, 0, e.shiftKey); break;
+    case "ArrowDown": e.preventDefault(); move(1, 0, e.shiftKey); break;
+    case "ArrowLeft": e.preventDefault(); move(0, -1, e.shiftKey); break;
+    case "ArrowRight": e.preventDefault(); move(0, 1, e.shiftKey); break;
+    case "Tab": e.preventDefault(); move(0, e.shiftKey ? -1 : 1, false); break;
+    case "Enter": e.preventDefault(); beginEdit(); break;
+    case "F2": e.preventDefault(); beginEdit(); break;
+    case "Home": e.preventDefault(); moveTo(sel.vr, 0, e.shiftKey); break;
+    case "End": e.preventDefault(); moveTo(sel.vr, sheet().columns.length - 1, e.shiftKey); break;
+    case "PageDown": e.preventDefault(); move(20, 0, e.shiftKey); break;
+    case "PageUp": e.preventDefault(); move(-20, 0, e.shiftKey); break;
+    case "Delete":
+    case "Backspace": e.preventDefault(); clearRange(); break;
+    default:
+      if (e.key.length === 1 && !e.altKey) { e.preventDefault(); beginEdit(e.key); }
+  }
+});
+
+wrapEl.addEventListener("copy", (e) => {
+  if (editing) return;
+  e.preventDefault();
+  e.clipboardData.setData("text/plain", rangeAsTsv());
+});
+
+wrapEl.addEventListener("cut", (e) => {
+  if (editing) return;
+  e.preventDefault();
+  e.clipboardData.setData("text/plain", rangeAsTsv());
+  clearRange();
+});
+
+wrapEl.addEventListener("paste", (e) => {
+  if (editing) return;
+  e.preventDefault();
+  pasteTsv(e.clipboardData.getData("text/plain"));
+});
+
+$("search").addEventListener("input", (e) => {
+  commitEdit();
+  query = e.target.value;
+  computeVisible();
+  sel = { vr: 0, c: sel.c, avr: 0, ac: sel.c };
+  render();
+});
+$("search").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.target.value = ""; query = ""; computeVisible(); render(); wrapEl.focus(); }
+  if (e.key === "Enter") wrapEl.focus();
+});
+
+$("add-row").onclick = () => {
+  if (query) { query = ""; $("search").value = ""; }  // a blank row would be filtered out
+  insertRow(sheet().rows.length);
+  moveTo(visible.length - 1, 0, false);
+  wrapEl.focus();
+};
+$("add-col").onclick = () => {
+  const name = prompt("New column name:", "New column");
+  if (name !== null) addColumn(sheet().columns.length, name);
+};
+$("undo").onclick = () => { wrapEl.focus(); doUndo(); };
+$("redo").onclick = () => { wrapEl.focus(); doRedo(); };
+/* Column widths and line counts are computed per viewport, so rotating a phone
+   or crossing the breakpoint has to redraw. Never mid-edit — that would throw
+   away what's being typed. */
+let resizeTimer = null;
+let wasNarrow = isNarrow();
+addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const narrow = isNarrow();
+    if (editing || (!narrow && !wasNarrow)) return;
+    wasNarrow = narrow;
+    render();
+  }, 150);
+});
+
+/* Cells wrap by default; turning it off is remembered for this browser. */
+const WRAP_KEY = "crm.sheets.wrap";
+
+function applyWrap(on) {
+  document.body.classList.toggle("wrap", on);
+  $("wrap").checked = on;
+}
+
+let wrapPref = true;
+try {
+  const stored = localStorage.getItem(WRAP_KEY);
+  if (stored !== null) wrapPref = stored === "1";
+} catch {}                                  // private mode can throw on access
+applyWrap(wrapPref);
+
+$("wrap").onchange = (e) => {
+  applyWrap(e.target.checked);
+  try { localStorage.setItem(WRAP_KEY, e.target.checked ? "1" : "0"); } catch {}
+};
+
+$("csv").onclick = () => {
+  const s = sheet();
+  const cell = (v) => {
+    const t = String(v ?? "");
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const csv = [s.columns.map((c) => cell(c.name)).join(",")]
+    .concat(s.rows.map((r) => r.map(cell).join(",")))
+    .join("\n");
+  const url = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = s.name.replace(/[^\w]+/g, "-").toLowerCase() + ".csv";
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+/* ---------------- boot ---------------- */
+
+(async function init() {
+  try {
+    const res = await fetch("/api/sheets");
+    doc = await res.json();
+    if (!doc.sheets || !doc.sheets.length) throw new Error("no sheets found");
+    // Which sheet this page is comes from the URL, stamped into the body by the
+    // server. Falling back to the first one keeps a stale link working.
+    const wanted = document.body.dataset.sheet;
+    const found = doc.sheets.findIndex((s) => s.id === wanted);
+    si = found === -1 ? 0 : found;
+    // What this page is allowed to save over. Every later save quotes it back,
+    // and the server refuses the save if the sheet has moved on since.
+    for (const s of doc.sheets) revs[s.id] = s.rev;
+    computeVisible();
+    render();
+    setStatus("All changes saved", "saved");
+    wrapEl.focus();
+  } catch (err) {
+    setStatus("Could not load data", "error");
+    gridEl.innerHTML = `<tbody><tr><td style="padding:1rem">Failed to load sheets: ${esc(err.message)}</td></tr></tbody>`;
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,29 @@
+# Secrets and tenant data — never commit these.
+.env
+
+# Live databases (real tenant PII) and their WAL/SHM sidecars
+crm.db
+crm.db-shm
+crm.db-wal
+crm-backup-*.db
+crm-backup-*.db-shm
+crm-backup-*.db-wal
+checklist/checklists.db
+checklist/checklists.db-shm
+checklist/checklists.db-wal
+
+# Exported/scraped spreadsheet contents (real tour + lease rows)
+data/sheets.json
+
+# Tenant-uploaded photos and generated inspection PDFs
+checklist/uploads/
+checklist/pdfs/
+
+# Reference doc containing tenant email addresses
+home-unit-information.html
+
+# Dependencies
+node_modules/
+
+# Local editor/agent settings
+.claude/settings.local.json

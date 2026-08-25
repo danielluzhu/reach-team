@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Property condition checklist</title>
+  <!-- The clipboard emoji, set as text rather than drawn as paths: the app is
+       used on phones and tablets, where the emoji font is part of the system,
+       and a form is what this glyph says at 16px better than any outline of
+       one would. dominant-baseline keeps it centred whatever font supplies it. -->
+  <text x="50%" y="50%" font-size="56" text-anchor="middle" dominant-baseline="central"
+        font-family="'Apple Color Emoji','Segoe UI Emoji','Noto Color Emoji',sans-serif">📋</text>
+</svg>

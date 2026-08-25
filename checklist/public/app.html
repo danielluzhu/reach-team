@@ -1,0 +1,1466 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<!-- viewport-fit so the sticky footer clears the home indicator on an iPhone -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#111827" />
+<title>Property Condition Checklist</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<!-- iOS uses this one when the page is added to the home screen, and it won't
+     take an SVG — so the emoji is handed over as a PNG at the size iOS asks
+     for. Same glyph, rendered once at build time rather than per visit. -->
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+<style>
+  :root {
+    --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --bg: #f4f5f7;
+    --accent: #1d4ed8; --excellent: #0f5132; --good: #12734a; --fair: #a15c00; --poor: #b3261e;
+    --tap: 44px;                       /* nothing interactive is smaller */
+    --footer: calc(72px + env(safe-area-inset-bottom));
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding-bottom: var(--footer);
+    /* Kills pull-to-refresh. Swiping down at the top of a long form is an easy
+       accident, and on a mobile browser it reloads the page. */
+    overscroll-behavior-y: contain;
+  }
+
+  /* Shown when a checklist is picked back up after the page went away. */
+  .restored { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; padding: 10px 12px;
+    background: #e7f4ec; border: 1px solid #b7e0c6; border-radius: 10px;
+    color: #14532d; font-size: 0.85rem; line-height: 1.4; }
+  .restored button { flex: none; border: 0; background: none; padding: 4px 6px; font: inherit;
+    font-size: 0.8rem; font-weight: 600; color: #14532d; text-decoration: underline; cursor: pointer; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 0 16px; }
+
+  header { background: var(--ink); color: #fff; padding: 18px 0 16px; }
+  header .wrap { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  header h1 { margin: 0; font-size: 1.05rem; letter-spacing: -0.01em; }
+  header .step { font-size: 0.78rem; color: #9ca3af; white-space: nowrap; }
+  /* Says the work is off the phone. Quiet, but present — the whole point of
+     saving to the server is that somebody can be told it happened. */
+  .saved-dot { display: inline-block; margin-right: 8px; padding-left: 12px; position: relative; }
+  .saved-dot::before { content: ""; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+    width: 6px; height: 6px; border-radius: 50%; background: #4ade80; }
+  .saved-dot.pending::before { background: #fbbf24; }
+  .saved-dot.offline::before { background: #f87171; }
+
+  /* Progress across the three steps, so "how much more of this is there?"
+     has an answer without scrolling. */
+  .bar { height: 3px; background: #374151; }
+  .bar i { display: block; height: 100%; background: #60a5fa; width: 33%; transition: width 0.25s ease; }
+
+  section[hidden] { display: none; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 14px 0; }
+  .card > h2 { margin: 0 0 4px; font-size: 1rem; }
+  .card > p.sub { margin: 0 0 14px; color: var(--muted); font-size: 0.85rem; }
+
+  label { display: block; font-size: 0.82rem; font-weight: 600; color: #374151; margin: 14px 0 6px; }
+  label:first-of-type { margin-top: 0; }
+  input[type=text], input[type=email], textarea {
+    width: 100%; min-height: var(--tap); padding: 11px 12px; border: 1px solid #cbd5e1;
+    border-radius: 10px; font: inherit; font-size: 16px; /* 16px or iOS zooms on focus */
+    background: #fff; color: inherit;
+  }
+  textarea { min-height: 60px; resize: vertical; }
+  input:focus, textarea:focus, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent;
+  }
+
+  /* Steppers beat a number keypad for a value that is almost always 0-4. */
+  .stepper { display: flex; align-items: center; gap: 14px; }
+  .stepper button {
+    width: var(--tap); height: var(--tap); border-radius: 50%; border: 1px solid #cbd5e1;
+    background: #fff; font-size: 1.4rem; line-height: 1; color: var(--ink); cursor: pointer;
+  }
+  .stepper button:disabled { opacity: 0.35; cursor: default; }
+  .stepper output { font-size: 1.25rem; font-weight: 600; min-width: 2ch; text-align: center; }
+
+  .room { background: #fff; border: 1px solid var(--line); border-radius: 14px; margin: 12px 0; overflow: hidden; }
+  .room > summary {
+    display: flex; align-items: center; gap: 10px; padding: 14px 16px; cursor: pointer;
+    list-style: none; min-height: var(--tap); font-weight: 600;
+  }
+  .room > summary::-webkit-details-marker { display: none; }
+  .room > summary .chev { color: #9ca3af; transition: transform 0.15s ease; }
+  .room[open] > summary .chev { transform: rotate(90deg); }
+  .room > summary .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .room > summary .done { font-size: 0.75rem; font-weight: 600; color: var(--muted); white-space: nowrap; }
+  .room[data-complete="yes"] > summary .done { color: var(--good); }
+  /* Removing a room is on its header, not only inside it: a room you don't
+     have shouldn't have to be opened and read before it can go. */
+  .room > summary .kill { border: 0; background: none; color: #b9bec6; font-size: 1.3rem;
+    width: 34px; height: 34px; margin: -4px -8px -4px 0; cursor: pointer; flex: none; }
+  .room-body { border-top: 1px solid var(--line); padding: 4px 16px 16px; }
+  /* Quieter than the item fields — it describes the room rather than recording
+     a condition, and shouldn't read as another thing to fill in. */
+  .room-note { margin-top: 12px; background: #f8f9fb; border-style: dashed; font-size: 16px; }
+  .room-note:not(:placeholder-shown) { background: #fff; border-style: solid; }
+  .room-tools { display: flex; gap: 8px; padding: 12px 0 2px; }
+
+  .item { padding: 14px 0; border-bottom: 1px solid #f1f2f4; }
+  .item:last-child { border-bottom: 0; }
+  .item .top { display: flex; align-items: center; gap: 10px; }
+  .item .label { flex: 1; font-size: 0.92rem; }
+  .item .drop { border: 0; background: none; color: #b9bec6; font-size: 1.15rem; width: 32px; height: 32px;
+    cursor: pointer; flex: none; }
+
+  /* Segmented control: finger-wide targets rather than a select. Auto-fit
+     wraps the five conditions onto two rows on a phone and keeps them on one
+     across a wider screen, so no target is ever squeezed under 44px. */
+  .conds { display: grid; grid-template-columns: repeat(auto-fit, minmax(74px, 1fr)); gap: 6px; margin-top: 10px; }
+  .conds button {
+    min-height: var(--tap); border: 1px solid #cbd5e1; background: #fff; border-radius: 10px;
+    font: inherit; font-size: 0.78rem; font-weight: 600; color: #4b5563; cursor: pointer;
+    padding: 0 2px;
+  }
+  .conds button[aria-pressed="true"] { color: #fff; border-color: transparent; }
+  .conds button[data-c="Excellent"][aria-pressed="true"] { background: var(--excellent); }
+  .conds button[data-c="Good"][aria-pressed="true"] { background: var(--good); }
+  .conds button[data-c="Fair"][aria-pressed="true"] { background: var(--fair); }
+  .conds button[data-c="Poor"][aria-pressed="true"] { background: var(--poor); }
+  .conds button[data-c="N/A"][aria-pressed="true"] { background: #6b7280; }
+  .item textarea { margin-top: 8px; font-size: 16px; }
+
+  .add-row { display: flex; gap: 8px; margin-top: 10px; }
+  .add-row input { flex: 1; }
+  .ghost {
+    min-height: var(--tap); padding: 0 16px; border: 1px dashed #b6bdc7; background: #fff;
+    border-radius: 10px; font: inherit; font-size: 0.86rem; font-weight: 600; color: #374151; cursor: pointer;
+  }
+  .ghost.block { display: block; width: 100%; }
+  .danger { color: var(--poor); border-color: #f0c4c1; }
+
+  /* Signature: a canvas sized to the device pixel ratio, so a stylus line is
+     crisp rather than a stretched bitmap. */
+  .sigwrap { position: relative; border: 1px solid #cbd5e1; border-radius: 12px; background: #fff; overflow: hidden; }
+  /* Every signature canvas, not just the tenant's. A canvas with no CSS size
+     takes its layout size from its width/height attributes — and those are set
+     from the measured box times the device pixel ratio, so each resize
+     multiplied the height again (150 -> 450 -> 1350px on a phone). The agent
+     box grew down the page until it couldn't be signed. Sizing in CSS is what
+     makes the measurement stable. */
+  .sigwrap canvas { display: block; width: 100%; height: 190px; touch-action: none; }
+  .sigwrap .baseline { position: absolute; left: 18px; right: 18px; bottom: 46px; border-bottom: 1px dashed #cbd5e1; }
+  .sigwrap .hintline { position: absolute; left: 18px; bottom: 24px; color: #b6bdc7; font-size: 0.8rem; }
+  .sigwrap.signed .baseline, .sigwrap.signed .hintline { display: none; }
+
+  footer.actions {
+    position: fixed; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.96);
+    border-top: 1px solid var(--line); padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+    backdrop-filter: blur(8px); z-index: 5;
+  }
+  footer .wrap { display: flex; gap: 10px; }
+  .btn {
+    flex: 1; min-height: 50px; border-radius: 12px; border: 0; background: var(--accent); color: #fff;
+    font: inherit; font-size: 1rem; font-weight: 600; cursor: pointer;
+  }
+  .btn[disabled] { opacity: 0.5; cursor: default; }
+  .btn.secondary { flex: 0 0 34%; background: #fff; color: #374151; border: 1px solid #cbd5e1; }
+  .build { position: absolute; right: 10px; bottom: 2px; font-size: 0.58rem; color: #c3c8d0;
+    letter-spacing: 0.02em; pointer-events: none; }
+  footer.actions .wrap { position: relative; }
+
+  .msg { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; font-size: 0.87rem; }
+  .msg.err { background: #fdecea; color: #8c1d18; border: 1px solid #f5c6c2; }
+  .msg.ok { background: #e7f4ec; color: #14532d; border: 1px solid #b7e0c6; }
+  .review dl { margin: 0; display: grid; grid-template-columns: 40% 1fr; gap: 6px 12px; font-size: 0.9rem; }
+  .review dt { color: var(--muted); }
+  .review dd { margin: 0; }
+  .tally { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .pill { font-size: 0.78rem; font-weight: 600; padding: 4px 10px; border-radius: 999px; background: #eef0f3; color: #4b5563; }
+  .pill.poor { background: #fdecea; color: #8c1d18; }
+  .pill.blank { background: #fff4e0; color: #8a5a00; }
+
+  /* The certification is a 44px-tall row, not a 13px box: it is the one thing
+     on this page that has to be deliberate rather than fiddly. */
+  .check { display: flex; gap: 12px; align-items: flex-start; margin: 0; padding: 8px 0;
+    font-size: 0.92rem; font-weight: 500; color: var(--ink); cursor: pointer; }
+  .check input { width: 26px; height: 26px; margin: 0; flex: none; accent-color: var(--accent); }
+  .terms { margin: 14px 0 0; padding-left: 18px; color: var(--muted); font-size: 0.78rem; line-height: 1.5; }
+  .terms li { margin: 6px 0; }
+  .opt { font-size: 0.72rem; font-weight: 600; color: var(--muted); background: #eef0f3;
+    border-radius: 999px; padding: 2px 8px; vertical-align: middle; }
+
+  /* Attachments, as a grid of thumbnails. A video has no thumbnail without
+     decoding it, so it gets a labelled tile instead. */
+  .media { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; margin-top: 12px; }
+  .media:empty { display: none; }
+  .media figure { position: relative; margin: 0; aspect-ratio: 1; border-radius: 10px; overflow: hidden;
+    background: #eef0f3; border: 1px solid var(--line); }
+  .media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .media .vid { display: flex; flex-direction: column; align-items: center; justify-content: center;
+    height: 100%; gap: 4px; color: #4b5563; font-size: 0.7rem; text-align: center; padding: 6px; }
+  .media .vid b { font-size: 1.3rem; font-weight: 400; }
+  .media .rm { position: absolute; top: 4px; right: 4px; width: 28px; height: 28px; border: 0;
+    border-radius: 50%; background: rgba(17,24,39,0.72); color: #fff; font-size: 1rem; cursor: pointer; }
+  .media figure.busy { opacity: 0.55; }
+  .media figure.busy::after { content: ""; position: absolute; inset: auto 0 0 0; height: 3px;
+    background: var(--accent); animation: load 1.1s ease-in-out infinite; }
+  @keyframes load { 0% { width: 10% } 50% { width: 80% } 100% { width: 10% } }
+  .media figure.failed { border-color: #f5c6c2; background: #fdecea; }
+
+  /* Sits just above the fixed footer, so a message about the button you just
+     pressed is next to that button rather than somewhere down the page. */
+  #toast { position: fixed; left: 16px; right: 16px; bottom: calc(var(--footer) + 10px); z-index: 6;
+    background: #1f2937; color: #fff; border-radius: 10px; padding: 10px 14px; font-size: 0.85rem;
+    text-align: center; box-shadow: 0 6px 20px rgba(0,0,0,0.18); }
+  #toast.error { background: #8c1d18; }
+
+  /* The field the message is about. */
+  .invalid { border-color: var(--poor) !important; box-shadow: 0 0 0 3px rgba(179,38,30,0.13); }
+
+  .done-screen { text-align: center; padding: 26px 16px 8px; }
+  .done-screen .tick { width: 58px; height: 58px; border-radius: 50%; background: #e7f4ec; color: var(--good);
+    font-size: 1.9rem; line-height: 58px; margin: 0 auto 12px; }
+  a.pdf { display: block; text-align: center; text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Property Condition Checklist</h1>
+    <span class="step">
+      <span id="save-state" class="saved-dot" hidden></span>
+      <span id="step-label">Step 1 of 3</span>
+    </span>
+  </div>
+</header>
+<div class="bar"><i id="progress"></i></div>
+
+<main class="wrap">
+
+  <p class="restored" id="restored" hidden>
+    <span id="restored-text"></span>
+    <button type="button" id="discard-draft">Start fresh</button>
+  </p>
+
+  <!-- ---------- step 1: who and where ---------- -->
+  <section id="step-details">
+    <div class="card">
+      <h2>Your details</h2>
+      <p class="sub">These go on the signed copy.</p>
+      <label for="f-name">Tenant full name</label>
+      <!-- Suggested rather than filled in: the field starts empty, so a name
+           only ever gets onto a signed checklist by being typed. -->
+      <input id="f-name" type="text" autocomplete="name" enterkeyhint="next" placeholder="Dan Zhu" />
+      <label for="f-email">Email</label>
+      <input id="f-email" type="email" autocomplete="email" inputmode="email" enterkeyhint="next" placeholder="you@example.com" />
+      <label for="f-address">Property address</label>
+      <input id="f-address" type="text" autocomplete="street-address" enterkeyhint="done" placeholder="12 Example Ave NE, Unit 101" />
+    </div>
+
+    <div class="card">
+      <h2>Rooms</h2>
+      <p class="sub">We'll build the checklist from this. You can add or remove rooms next.</p>
+      <label id="l-bed">Bedrooms</label>
+      <div class="stepper" role="group" aria-labelledby="l-bed">
+        <button type="button" data-step="bedrooms" data-by="-1" aria-label="One fewer bedroom">&minus;</button>
+        <output id="out-bedrooms" aria-live="polite">1</output>
+        <button type="button" data-step="bedrooms" data-by="1" aria-label="One more bedroom">+</button>
+      </div>
+      <label id="l-bath">Bathrooms</label>
+      <div class="stepper" role="group" aria-labelledby="l-bath">
+        <button type="button" data-step="bathrooms" data-by="-1" aria-label="One fewer bathroom">&minus;</button>
+        <output id="out-bathrooms" aria-live="polite">1</output>
+        <button type="button" data-step="bathrooms" data-by="1" aria-label="One more bathroom">+</button>
+      </div>
+      <p class="sub" style="margin:14px 0 0">Living room, kitchen, hallway and exterior premises are added automatically.</p>
+
+      <label class="check" for="furnished" style="margin-top:14px">
+        <input type="checkbox" id="furnished" />
+        <span>The property is furnished</span>
+      </label>
+      <p class="sub" id="furnished-note" style="margin:2px 0 0 38px" hidden></p>
+    </div>
+
+    <div class="card">
+      <h2>Agent <span class="opt">optional</span></h2>
+      <p class="sub">
+        The agent walking the property with you, if there is one. Leave it blank if nobody
+        from the office is here — the checklist is still valid without it.
+      </p>
+      <label for="f-agent">Agent full name</label>
+      <input id="f-agent" type="text" autocomplete="off" enterkeyhint="done" placeholder="Dan Zhu" />
+    </div>
+    <p class="msg err" id="err-details" hidden></p>
+  </section>
+
+  <!-- ---------- step 2: the checklist ---------- -->
+  <section id="step-rooms" hidden>
+    <div id="rooms"></div>
+    <div class="card">
+      <h2>Add a room</h2>
+      <p class="sub">Garage, basement, laundry — anything the list is missing.</p>
+      <div class="add-row">
+        <input id="new-room" type="text" placeholder="Room name" enterkeyhint="done" />
+        <button type="button" class="ghost" id="add-room">Add</button>
+      </div>
+    </div>
+
+    <!-- The last section, and the one that belongs to no room: anything about
+         the property as a whole, plus the photos and videos backing it up. -->
+    <div class="card">
+      <h2>General notes</h2>
+      <p class="sub">
+        Anything that isn't about one room — the building, shared areas, smells, damp, how it was
+        left. Leave it blank if there's nothing.
+      </p>
+      <textarea id="general-notes" rows="4"
+        placeholder="e.g. Front door sticks in wet weather. Recycling bins were overflowing on arrival."></textarea>
+
+      <h2 style="margin-top:20px">Photos and videos</h2>
+      <p class="sub" id="media-hint">Add pictures of anything worth a record. They're stored with the checklist.</p>
+
+      <div class="media" id="media"></div>
+
+      <div class="add-row" style="margin-top:10px">
+        <button type="button" class="ghost" id="pick-photo" style="flex:1">Add photo</button>
+        <button type="button" class="ghost" id="pick-video" style="flex:1">Add video</button>
+      </div>
+      <!-- capture="environment" opens the rear camera on a phone but still
+           allows the library, which is what a walkthrough needs. -->
+      <input type="file" id="file-photo" accept="image/*" capture="environment" multiple hidden />
+      <input type="file" id="file-video" accept="video/*" capture="environment" hidden />
+      <p class="msg err" id="err-media" hidden></p>
+    </div>
+  </section>
+
+  <!-- ---------- step 3: review and sign ---------- -->
+  <section id="step-sign" hidden>
+    <div class="card review">
+      <h2>Review</h2>
+      <dl id="review"></dl>
+      <div class="tally" id="tally"></div>
+    </div>
+    <div class="card">
+      <h2>Certification</h2>
+      <label class="check" for="certify">
+        <input type="checkbox" id="certify" />
+        <span id="certification-text">I certify that all information provided is true and correct to
+          the best of my knowledge.</span>
+      </label>
+      <ul class="terms" id="acknowledgements"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Tenant signature</h2>
+      <p class="sub">Signed by <strong id="sig-who">the tenant</strong>.</p>
+      <div class="sigwrap" id="sigwrap">
+        <canvas id="sig"></canvas>
+        <div class="baseline"></div>
+        <div class="hintline">Sign above the line</div>
+      </div>
+      <button type="button" class="ghost block danger" id="clear-sig" style="margin-top:10px">Clear signature</button>
+    </div>
+
+    <!-- Only offered when an agent was named on the first page; with nobody to
+         attribute it to, a second signature box is just a thing to get wrong. -->
+    <div class="card" id="agent-card" hidden>
+      <h2>Agent signature <span class="opt">optional</span></h2>
+      <p class="sub">For <strong id="agent-who">the agent</strong>. Skip it if they'd rather sign the printed copy.</p>
+      <div class="sigwrap" id="agent-sigwrap">
+        <canvas id="agent-sig"></canvas>
+        <div class="baseline"></div>
+        <div class="hintline">Agent signs above the line</div>
+      </div>
+      <button type="button" class="ghost block" id="clear-agent-sig" style="margin-top:10px">Clear signature</button>
+    </div>
+    <p class="msg err" id="err-sign" hidden></p>
+  </section>
+
+  <!-- ---------- done ---------- -->
+  <section id="step-done" hidden>
+    <div class="card done-screen">
+      <div class="tick">&check;</div>
+      <h2 style="margin:0 0 6px">Checklist signed</h2>
+      <p class="sub" id="done-sub">Your copy is ready.</p>
+      <a class="btn pdf" id="pdf-link" href="#" target="_blank" rel="noopener" style="line-height:50px">Open the PDF</a>
+      <p class="sub" style="margin-top:14px">
+        On a phone, use the share button in the PDF viewer to save it to your files or email it on.
+      </p>
+      <button type="button" class="ghost block" id="start-over" style="margin-top:8px">Start another checklist</button>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast" hidden></div>
+
+<footer class="actions" id="actions">
+  <div class="wrap">
+    <button type="button" class="btn secondary" id="back" hidden>Back</button>
+    <button type="button" class="btn" id="next">Continue</button>
+    <!-- Which copy of this page a phone is running. Small, but it turns "it
+         doesn't work" into a question with an answer. -->
+    <span class="build" id="build-tag"></span>
+  </div>
+</footer>
+
+<script>
+"use strict";
+
+/* ---------------- telling us when it breaks ----------------
+ *
+ * A page that fails on someone else's phone leaves no trace here, and "the
+ * button does nothing" is the symptom of every silent exception. Anything
+ * thrown is reported before it can be swallowed, along with which build of
+ * this page it came from.
+ */
+
+var BUILD = "__BUILD__";
+try { document.getElementById("build-tag").textContent = BUILD; } catch (e) {}
+
+function reportError(where, err) {
+  try {
+    var body = {
+      build: BUILD,
+      where: where,
+      step: typeof state === "object" && state ? String(state.step) : "?",
+      message: (err && (err.message || err.toString())) || String(err),
+      stack: (err && err.stack) || ""
+    };
+    fetch("/api/client-error", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      keepalive: true
+    }).catch(function () {});
+  } catch (e) { /* reporting must never be the thing that breaks */ }
+}
+
+window.addEventListener("error", function (e) {
+  reportError("window", e.error || { message: e.message + " @" + e.filename + ":" + e.lineno });
+});
+
+/**
+ * The two footer buttons are wired here, at the top, by delegation from the
+ * document — not further down next to the code they run.
+ *
+ * The handlers used to be attached near the end of this script, which meant
+ * anything that threw on the way there left Continue attached to nothing: a
+ * button that does exactly nothing however the form is filled in, with no
+ * error to see. Delegation from a listener registered first survives that,
+ * and `guarded` turns whatever went wrong into a message and a report.
+ *
+ * onNextClick and onBackClick are function declarations, so they exist from
+ * the moment this runs even though they're written below.
+ */
+document.addEventListener("click", guarded("footer", function (e) {
+  var button = e.target && e.target.closest ? e.target.closest("#next, #back") : null;
+  if (!button || button.disabled) return;
+  if (button.id === "next") onNextClick();
+  else onBackClick();
+}));
+window.addEventListener("unhandledrejection", function (e) {
+  reportError("promise", e.reason || { message: "unhandled rejection" });
+});
+
+/**
+ * Wraps a handler so a throw inside it becomes a message the person can see
+ * and a line we can read, instead of a button that appears dead.
+ */
+function guarded(where, fn) {
+  return function (e) {
+    try {
+      return fn.call(this, e);
+    } catch (err) {
+      reportError(where, err);
+      try {
+        toast("Something went wrong here — it's been reported. Your work is saved.", true);
+      } catch (e2) { /* nothing left to do */ }
+    }
+  };
+}
+
+/* ---------------- state ---------------- */
+
+var state = {
+  step: 0,                       // 0 details, 1 rooms, 2 sign, 3 done
+  bedrooms: 1,
+  bathrooms: 1,
+  rooms: [],                     // [{ kind, name, items:[{label, condition, notes}] }]
+  templates: null,
+  generalNotes: "",
+  media: [],                     // [{ kind, name, id?, mime?, size?, busy, failed, preview }]
+  maxAttachments: 24,
+  conditions: ["Excellent", "Good", "Fair", "Poor", "N/A"],
+  maxCount: 12,
+  // Remembered so returning to step 1 and changing a count doesn't silently
+  // throw away rooms and notes already filled in.
+  builtFor: null
+};
+
+var $ = function (id) { return document.getElementById(id); };
+var STEPS = ["step-details", "step-rooms", "step-sign", "step-done"];
+
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/* ---------------- keeping the work ----------------
+ *
+ * Everything typed is kept in localStorage as it's typed, and put back when
+ * the page loads. Before this, the whole checklist lived only in memory: a
+ * walkthrough is twenty minutes of typing on a phone, and any reload threw all
+ * of it away. Reloads are not rare here — opening the camera for a photo
+ * leaves the browser, and a phone under memory pressure quietly discards the
+ * tab and reloads it on the way back. Pull-to-refresh does the same thing in
+ * one careless swipe.
+ *
+ * What is deliberately NOT kept: the signatures. A signature has to be made,
+ * not restored from storage — everything else is a description of a room, but
+ * that is someone putting their name to it.
+ */
+
+var DRAFT_KEY = "checklist-draft-v1";
+var DRAFT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+function draftSnapshot() {
+  return {
+    v: 1,
+    savedAt: Date.now(),
+    step: Math.min(state.step, 1),   // never resume onto the signature step
+    name: $("f-name").value,
+    email: $("f-email").value,
+    address: $("f-address").value,
+    agentName: $("f-agent").value,
+    furnished: $("furnished").checked,
+    bedrooms: state.bedrooms,
+    bathrooms: state.bathrooms,
+    builtFor: state.builtFor,
+    rooms: state.rooms,
+    generalNotes: state.generalNotes,
+    // Only what the server has already accepted; a half-finished upload isn't
+    // worth restoring, and the bytes live on the server, not in here.
+    media: state.media.filter(function (m) { return m.id; }).map(function (m) {
+      return { id: m.id, kind: m.kind, mime: m.mime, name: m.name, size: m.size, url: m.url };
+    })
+  };
+}
+
+function hasWork() {
+  return Boolean(
+    $("f-name").value.trim() || $("f-address").value.trim() ||
+    state.rooms.length || state.generalNotes.trim() || state.media.length
+  );
+}
+
+var saveTimer = null;
+function saveDraft(now) {
+  clearTimeout(saveTimer);
+  var write = function () {
+    try {
+      // Nothing to keep once it's signed — the record is the server's now.
+      if (state.step === 3 || !hasWork()) return localStorage.removeItem(DRAFT_KEY);
+      localStorage.setItem(DRAFT_KEY, JSON.stringify(draftSnapshot()));
+    } catch (e) {
+      // A full or disabled store shouldn't break the form being filled in.
+    }
+  };
+  if (now) write(); else saveTimer = setTimeout(write, 400);
+}
+
+function clearDraft() {
+  clearTimeout(saveTimer);
+  try { localStorage.removeItem(DRAFT_KEY); localStorage.removeItem(DRAFT_ID_KEY); } catch (e) {}
+}
+
+/* ---- and the same thing, on the server ----
+ *
+ * The copy above is on one phone. When a checklist couldn't be submitted,
+ * twenty minutes of work existed only there — nobody could see it, and nobody
+ * could finish it for the tenant. So the answers go up as they're filled in,
+ * under an id this page makes once and keeps, and the row is updated in place.
+ *
+ * It is not a report: no signature goes with it and nobody has certified
+ * anything. It's the answers, saved early, so that pressing the button at the
+ * end stops being the moment everything depends on.
+ */
+
+var DRAFT_ID_KEY = "checklist-draft-id-v1";
+var serverDraftId = null;
+var pushTimer = null;
+var lastPushed = "";
+
+function draftId() {
+  if (serverDraftId) return serverDraftId;
+  try { serverDraftId = localStorage.getItem(DRAFT_ID_KEY); } catch (e) {}
+  if (!serverDraftId) {
+    serverDraftId = (window.crypto && window.crypto.randomUUID)
+      ? window.crypto.randomUUID()
+      // A browser without randomUUID still needs an id; this is only ever a
+      // key for a row, never a secret that protects anything by itself.
+      : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+          var r = (Math.random() * 16) | 0;
+          return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+        });
+    try { localStorage.setItem(DRAFT_ID_KEY, serverDraftId); } catch (e) {}
+  }
+  return serverDraftId;
+}
+
+function setSaveState(kind, when) {
+  var el = $("save-state");
+  if (!el) return;
+  el.hidden = false;
+  el.className = "saved-dot" + (kind === "saved" ? "" : " " + kind);
+  el.textContent = kind === "saved"
+    ? "Saved " + when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+    : kind === "pending" ? "Saving…" : "Not saved";
+}
+
+function pushDraft(now) {
+  clearTimeout(pushTimer);
+  var send = function () {
+    if (state.step === 3 || !hasWork()) return;
+    var payload = draftSnapshot();
+    payload.draftId = draftId();
+    var body = JSON.stringify(payload);
+    if (body === lastPushed) return;         // nothing has changed since the last one
+    setSaveState("pending");
+    fetch("/api/drafts/" + draftId(), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: body,
+      keepalive: true                        // survives the page being closed mid-flight
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error("rejected");
+        lastPushed = body;
+        setSaveState("saved", new Date());
+      })
+      .catch(function () {
+        // Kept locally regardless; this only reports what the server has.
+        setSaveState("offline");
+      });
+  };
+  if (now) send(); else pushTimer = setTimeout(send, 3000);
+}
+
+function dropServerDraft() {
+  if (!serverDraftId) return;
+  fetch("/api/drafts/" + serverDraftId, { method: "DELETE", keepalive: true }).catch(function () {});
+}
+
+/* The moment that matters most: the page being hidden is the last chance to
+   write before a phone discards the tab — which is exactly what happens when
+   the camera opens. Written synchronously here, not on a timer. */
+document.addEventListener("visibilitychange", function () {
+  if (document.visibilityState === "hidden") { saveDraft(true); pushDraft(true); }
+});
+window.addEventListener("pagehide", function () { saveDraft(true); pushDraft(true); });
+
+/* A last defence against a deliberate reload or a closed tab. Mobile browsers
+   often ignore it, which is why the autosave above is the real answer. */
+window.addEventListener("beforeunload", function (e) {
+  if (state.step === 3 || !hasWork()) return;
+  e.preventDefault();
+  e.returnValue = "";
+});
+
+/* Everything typed, tapped or ticked counts as a change worth keeping. Rating
+   an item and adding a room are taps, not input events, so both are listened
+   for rather than calling saveDraft from every handler that changes state. */
+document.addEventListener("input", function (e) {
+  // Typing into the field that was called out clears the mark on it.
+  if (e.target && e.target.classList) e.target.classList.remove("invalid");
+  saveDraft();
+  pushDraft();
+});
+document.addEventListener("change", function () { saveDraft(); pushDraft(); });
+document.addEventListener("click", function () { saveDraft(); pushDraft(); });
+
+function restoreDraft() {
+  var raw;
+  try { raw = localStorage.getItem(DRAFT_KEY); } catch (e) { return false; }
+  if (!raw) return false;
+
+  var d;
+  try { d = JSON.parse(raw); } catch (e) { clearDraft(); return false; }
+  if (!d || d.v !== 1 || !d.savedAt || Date.now() - d.savedAt > DRAFT_MAX_AGE_MS) {
+    clearDraft();
+    return false;
+  }
+
+  $("f-name").value = d.name || "";
+  $("f-email").value = d.email || "";
+  $("f-address").value = d.address || "";
+  $("f-agent").value = d.agentName || "";
+  $("furnished").checked = !!d.furnished;
+  state.bedrooms = typeof d.bedrooms === "number" ? d.bedrooms : state.bedrooms;
+  state.bathrooms = typeof d.bathrooms === "number" ? d.bathrooms : state.bathrooms;
+  state.rooms = Array.isArray(d.rooms) ? d.rooms : [];
+  state.builtFor = d.builtFor || null;
+  state.generalNotes = d.generalNotes || "";
+  $("general-notes").value = state.generalNotes;
+  // The photos are still on the server; the preview comes from there now,
+  // because the blob: URL from the original pick died with the old page.
+  state.media = (Array.isArray(d.media) ? d.media : []).map(function (m) {
+    return { id: m.id, kind: m.kind, mime: m.mime, name: m.name, size: m.size, url: m.url, preview: m.url };
+  });
+
+  var when = new Date(d.savedAt);
+  var today = when.toDateString() === new Date().toDateString();
+  $("restored-text").textContent =
+    "Picked up where you left off — saved " +
+    (today ? "at " + when.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+           : "on " + when.toLocaleDateString()) + ".";
+  $("restored").hidden = false;
+
+  renderCounts();
+  describeFurnishings();
+  renderMedia();
+  go(state.rooms.length && d.step === 1 ? 1 : 0);
+  return true;
+}
+
+$("discard-draft").addEventListener("click", function () {
+  if (!confirm("Start a new checklist? What was filled in will be cleared.")) return;
+  dropServerDraft();
+  clearDraft();
+  location.reload();
+});
+
+/* ---------------- step 1 ---------------- */
+
+function renderCounts() {
+  $("out-bedrooms").textContent = state.bedrooms;
+  $("out-bathrooms").textContent = state.bathrooms;
+  document.querySelectorAll("[data-step]").forEach(function (b) {
+    var key = b.dataset.step, by = +b.dataset.by;
+    var next = state[key] + by;
+    b.disabled = next < 0 || next > state.maxCount;
+  });
+}
+
+document.querySelectorAll("[data-step]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    var key = b.dataset.step;
+    state[key] = Math.max(0, Math.min(state.maxCount, state[key] + +b.dataset.by));
+    renderCounts();
+    describeFurnishings();
+  });
+});
+
+/**
+ * Say what ticking "furnished" will actually add, before it adds it — the list
+ * follows the rooms, so it changes as the counts do.
+ */
+function describeFurnishings() {
+  var note = $("furnished-note");
+  if (!$("furnished").checked) { note.hidden = true; return; }
+  var beds = state.bedrooms;
+  var parts = [];
+  if (beds) parts.push(beds === 1 ? "a bed and desk" : beds + " beds and desks");
+  parts.push("cookware, ceramicware and silverware");
+  parts.push("a couch and table/chairs");
+  note.textContent = "Adds a Furnishings section: " + parts.join(", ") + ".";
+  note.hidden = false;
+}
+$("furnished").addEventListener("change", describeFurnishings);
+
+function detailsProblem() {
+  if (!$("f-name").value.trim()) return { message: "Please enter the tenant's name.", focus: "f-name" };
+  var email = $("f-email").value.trim();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return { message: "Please enter a valid email address.", focus: "f-email" };
+  }
+  if (!$("f-address").value.trim()) return { message: "Please enter the property address.", focus: "f-address" };
+  if (state.bedrooms + state.bathrooms === 0) {
+    return { message: "Add at least one bedroom or bathroom.", focus: "l-bed" };
+  }
+  return null;
+}
+
+/**
+ * Say what's wrong where it can be seen, and point at the thing that's wrong.
+ *
+ * The button lives in a fixed footer while the fields scroll, so a message
+ * printed in the page flow can easily be off-screen at the moment it matters —
+ * which reads as a button that does nothing. The banner is fixed above the
+ * footer; the field is scrolled to, focused and outlined.
+ */
+function flagProblem(message, elementId) {
+  toast(message, true);
+  var el = elementId && $(elementId);
+  if (!el) return;
+  el.scrollIntoView({ block: "center", behavior: "smooth" });
+  if (typeof el.focus === "function" && /^(f-|new-|general)/.test(elementId)) {
+    try { el.focus({ preventScroll: true }); } catch (e) { el.focus(); }
+  }
+  if (el.classList) el.classList.add("invalid");
+}
+
+/* ---------------- step 2 ---------------- */
+
+/** Ask the server for the starting rooms, so the templates live in one place. */
+function buildRooms() {
+  var furnished = $("furnished").checked;
+  var key = state.bedrooms + "/" + state.bathrooms + "/" + (furnished ? "f" : "u");
+  // Keep what's already been filled in if nothing that shapes the list moved.
+  if (state.builtFor === key && state.rooms.length) return Promise.resolve();
+  return fetch("/api/rooms?bedrooms=" + state.bedrooms + "&bathrooms=" + state.bathrooms +
+               "&furnished=" + (furnished ? "1" : "0"))
+    .then(function (r) { return r.json(); })
+    .then(function (data) {
+      state.rooms = (data.rooms || []).map(function (room) {
+        return {
+          kind: room.kind,
+          name: room.name,
+          notes: "",
+          items: room.items.map(function (label) { return { label: label, condition: "", notes: "" }; })
+        };
+      });
+      state.builtFor = key;
+    });
+}
+
+/** A prompt that suits the room, since "note" on its own invites nothing. */
+function roomNoteHint(room) {
+  if (room.kind === "bedroom") return "Which bedroom? e.g. small one facing the street";
+  if (room.kind === "bathroom") return "Which bathroom? e.g. en-suite off Bedroom 1";
+  if (room.kind === "furnishings") return "Anything about the furniture as a whole";
+  return "About this room (optional)";
+}
+
+function roomProgress(room) {
+  var done = room.items.filter(function (i) { return i.condition; }).length;
+  return { done: done, total: room.items.length };
+}
+
+function renderRooms() {
+  var html = state.rooms.map(function (room, ri) {
+    var p = roomProgress(room);
+    var complete = p.done === p.total && p.total > 0;
+    return '<details class="room" data-complete="' + (complete ? "yes" : "no") + '"' + (ri === 0 ? " open" : "") + '>' +
+      '<summary>' +
+        '<span class="chev" aria-hidden="true">&#9656;</span>' +
+        '<span class="name">' + esc(room.name) + '</span>' +
+        '<span class="done">' + p.done + "/" + p.total + '</span>' +
+        '<button type="button" class="kill" data-drop-room="' + ri + '" ' +
+          'aria-label="Remove ' + esc(room.name) + '">&times;</button>' +
+      '</summary>' +
+      '<div class="room-body">' +
+        // Which room this is, in the tenant's own words. "Bedroom 2" means
+        // nothing six months later; "the small one facing the street" does.
+        '<input class="room-note" type="text" data-room-note="' + ri + '" ' +
+          'value="' + esc(room.notes || "") + '" maxlength="300" ' +
+          'placeholder="' + esc(roomNoteHint(room)) + '" />' +
+        '<div class="room-tools">' +
+          '<button type="button" class="ghost" data-all-good="' + ri + '">Mark all good</button>' +
+        '</div>' +
+        room.items.map(function (item, ii) {
+          return '<div class="item">' +
+            '<div class="top">' +
+              '<span class="label">' + esc(item.label) + '</span>' +
+              '<button type="button" class="drop" data-drop-item="' + ri + ',' + ii + '" ' +
+                'aria-label="Remove ' + esc(item.label) + '">&times;</button>' +
+            '</div>' +
+            '<div class="conds" role="group" aria-label="Condition of ' + esc(item.label) + '">' +
+              state.conditions.map(function (c) {
+                return '<button type="button" data-c="' + c + '" data-set="' + ri + ',' + ii + '" ' +
+                  'aria-pressed="' + (item.condition === c ? "true" : "false") + '">' + c + '</button>';
+              }).join("") +
+            '</div>' +
+            '<textarea data-note="' + ri + ',' + ii + '" rows="1" placeholder="Notes (optional)">' +
+              esc(item.notes) + '</textarea>' +
+          '</div>';
+        }).join("") +
+        '<div class="add-row">' +
+          '<input type="text" data-new-item="' + ri + '" placeholder="Add an item" />' +
+          '<button type="button" class="ghost" data-add-item="' + ri + '">Add</button>' +
+        '</div>' +
+        '<button type="button" class="ghost block danger" data-drop-room="' + ri + '" style="margin-top:10px">' +
+          'Remove ' + esc(room.name) + '</button>' +
+      '</div>' +
+    '</details>';
+  }).join("");
+
+  $("rooms").innerHTML = html || '<div class="card"><p class="sub" style="margin:0">' +
+    'No rooms yet — add one below.</p></div>';
+}
+
+/** Repaint one room's header counter without collapsing anything open. */
+function refreshRoomCount(ri) {
+  var details = $("rooms").children[ri];
+  if (!details) return;
+  var p = roomProgress(state.rooms[ri]);
+  details.dataset.complete = p.done === p.total && p.total > 0 ? "yes" : "no";
+  details.querySelector(".done").textContent = p.done + "/" + p.total;
+}
+
+$("rooms").addEventListener("click", guarded("rooms", function (e) {
+  var set = e.target.closest("[data-set]");
+  if (set) {
+    var at = set.dataset.set.split(",");
+    var item = state.rooms[+at[0]].items[+at[1]];
+    // Tapping the chosen one again clears it — a mis-tap shouldn't be permanent.
+    item.condition = item.condition === set.dataset.c ? "" : set.dataset.c;
+    set.parentElement.querySelectorAll("button").forEach(function (b) {
+      b.setAttribute("aria-pressed", b.dataset.c === item.condition ? "true" : "false");
+    });
+    refreshRoomCount(+at[0]);
+    return;
+  }
+
+  var dropItem = e.target.closest("[data-drop-item]");
+  if (dropItem) {
+    var pos = dropItem.dataset.dropItem.split(",");
+    state.rooms[+pos[0]].items.splice(+pos[1], 1);
+    renderRooms();
+    openRoom(+pos[0]);
+    return;
+  }
+
+  var addItem = e.target.closest("[data-add-item]");
+  if (addItem) {
+    var ri = +addItem.dataset.addItem;
+    var input = $("rooms").querySelector('[data-new-item="' + ri + '"]');
+    var label = input.value.trim();
+    if (!label) { input.focus(); return; }
+    state.rooms[ri].items.push({ label: label.slice(0, 120), condition: "", notes: "" });
+    renderRooms();
+    openRoom(ri);
+    return;
+  }
+
+  var allGood = e.target.closest("[data-all-good]");
+  if (allGood) {
+    var gi = +allGood.dataset.allGood;
+    // Only what hasn't been answered, so a Poor already recorded on the way
+    // round isn't quietly wiped by the shortcut.
+    var kept = state.rooms[gi].items.filter(function (i) { return i.condition && i.condition !== "Good"; }).length;
+    state.rooms[gi].items.forEach(function (item) { if (!item.condition) item.condition = "Good"; });
+    renderRooms();
+    openRoom(gi);
+    if (kept) toast(kept + (kept === 1 ? " item was" : " items were") + " already rated — left as they were");
+    return;
+  }
+
+  var dropRoom = e.target.closest("[data-drop-room]");
+  if (dropRoom) {
+    // The button sits inside the <summary>, which would otherwise open or
+    // close the room on its way through.
+    e.preventDefault();
+    var index = +dropRoom.dataset.dropRoom;
+    if (!confirm("Remove " + state.rooms[index].name + " and its items?")) return;
+    state.rooms.splice(index, 1);
+    renderRooms();
+  }
+}));
+
+/** A brief line at the foot of the screen; nothing to dismiss. */
+var toastTimer = null;
+function toast(message, isError) {
+  var el = $("toast");
+  el.textContent = message;
+  el.className = isError ? "error" : "";
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  // An error stays up longer: it's asking for something to be done, not
+  // reporting something that already happened.
+  toastTimer = setTimeout(function () { el.hidden = true; }, isError ? 6000 : 3200);
+}
+
+$("rooms").addEventListener("input", function (e) {
+  var roomNote = e.target.closest("[data-room-note]");
+  if (roomNote) {
+    state.rooms[+roomNote.dataset.roomNote].notes = roomNote.value.slice(0, 300);
+    return;
+  }
+
+  var note = e.target.closest("[data-note]");
+  if (!note) return;
+  var at = note.dataset.note.split(",");
+  state.rooms[+at[0]].items[+at[1]].notes = note.value.slice(0, 1000);
+  // Grow with the text; a phone keyboard leaves very little room to scroll in.
+  note.style.height = "auto";
+  note.style.height = Math.min(note.scrollHeight, 180) + "px";
+});
+
+function openRoom(ri) {
+  var details = $("rooms").children[ri];
+  if (details) { details.open = true; details.scrollIntoView({ block: "nearest" }); }
+}
+
+$("add-room").addEventListener("click", function () {
+  var input = $("new-room");
+  var name = input.value.trim();
+  if (!name) { input.focus(); return; }
+  var template = (state.templates && state.templates.other) || { items: ["Walls & ceiling", "Flooring"] };
+  state.rooms.push({
+    kind: "other",
+    name: name.slice(0, 80),
+    notes: "",
+    items: template.items.map(function (label) { return { label: label, condition: "", notes: "" }; })
+  });
+  input.value = "";
+  renderRooms();
+  openRoom(state.rooms.length - 1);
+});
+$("new-room").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { e.preventDefault(); $("add-room").click(); }
+});
+
+/* ---------------- attachments ---------------- */
+
+/* Uploaded as they're picked rather than all at once at the end: a walkthrough
+   happens on a phone on cell data, and a video that starts uploading while the
+   next room is being checked is a video that's already there at signing time.
+   state.media holds what the server has confirmed. */
+
+var PHOTO_MAX_EDGE = 1600;     // plenty for a condition photo, a fraction of the bytes
+var PHOTO_QUALITY = 0.82;
+
+/**
+ * Redraw a photo smaller before it leaves the phone. A modern camera picture
+ * is 3-6MB and proves nothing a 1600px one doesn't; it also normalises what
+ * the camera produced into JPEG, which is what the PDF can embed.
+ * Anything that can't be decoded is uploaded untouched and checked server-side.
+ */
+function shrinkPhoto(file) {
+  return new Promise(function (resolve) {
+    var url = URL.createObjectURL(file);
+    var img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      var scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(img.width, img.height));
+      if (scale === 1 && file.type === "image/jpeg" && file.size < 1.5e6) return resolve(file);
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(function (blob) {
+        resolve(blob ? new File([blob], (file.name || "photo").replace(/\.[^.]+$/, "") + ".jpg",
+          { type: "image/jpeg" }) : file);
+      }, "image/jpeg", PHOTO_QUALITY);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+function renderMedia() {
+  $("media").innerHTML = state.media.map(function (m, i) {
+    var body = m.kind === "photo" && m.preview
+      ? '<img src="' + m.preview + '" alt="' + esc(m.name) + '" />'
+      : '<div class="vid"><b>' + (m.kind === "video" ? "&#9654;" : "&#128247;") + "</b>" +
+        '<span>' + esc((m.name || "").slice(0, 24)) + "</span></div>";
+    return '<figure class="' + (m.busy ? "busy" : m.failed ? "failed" : "") + '">' + body +
+      (m.busy ? "" : '<button type="button" class="rm" data-rm="' + i + '" aria-label="Remove">&times;</button>') +
+      "</figure>";
+  }).join("");
+  var n = state.media.filter(function (m) { return m.id; }).length;
+  $("media-hint").textContent = n
+    ? n + (n === 1 ? " file" : " files") + " attached — they're stored with the checklist."
+    : "Add pictures of anything worth a record. They're stored with the checklist.";
+}
+
+function attach(files, kind) {
+  var list = Array.prototype.slice.call(files || []);
+  if (!list.length) return;
+  $("err-media").hidden = true;
+
+  if (state.media.length + list.length > state.maxAttachments) {
+    $("err-media").textContent = "Up to " + state.maxAttachments + " photos and videos in total.";
+    $("err-media").hidden = false;
+    return;
+  }
+
+  list.forEach(function (file) {
+    var entry = { kind: kind, name: file.name || kind, busy: true, preview: null };
+    state.media.push(entry);
+    renderMedia();
+
+    var prepared = kind === "photo" ? shrinkPhoto(file) : Promise.resolve(file);
+    prepared
+      .then(function (ready) {
+        if (kind === "photo") entry.preview = URL.createObjectURL(ready);
+        renderMedia();
+        var form = new FormData();
+        form.append("file", ready, ready.name || file.name || "upload");
+        return fetch("/api/uploads", { method: "POST", body: form });
+      })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That upload failed.");
+          return data;
+        });
+      })
+      .then(function (data) {
+        entry.busy = false;
+        entry.id = data.id;
+        entry.mime = data.mime;
+        entry.size = data.size;
+        entry.url = data.url;
+        entry.name = data.name || entry.name;
+        renderMedia();
+        saveDraft(true); // an upload is worth keeping the moment it lands
+      })
+      .catch(function (err) {
+        entry.busy = false;
+        entry.failed = true;
+        renderMedia();
+        $("err-media").textContent = (entry.name ? entry.name + ": " : "") + err.message;
+        $("err-media").hidden = false;
+      });
+  });
+}
+
+$("pick-photo").addEventListener("click", function () { $("file-photo").click(); });
+$("pick-video").addEventListener("click", function () { $("file-video").click(); });
+$("file-photo").addEventListener("change", function (e) { attach(e.target.files, "photo"); e.target.value = ""; });
+$("file-video").addEventListener("change", function (e) { attach(e.target.files, "video"); e.target.value = ""; });
+
+$("media").addEventListener("click", guarded("media", function (e) {
+  var rm = e.target.closest("[data-rm]");
+  if (!rm) return;
+  var entry = state.media[+rm.dataset.rm];
+  if (entry && entry.preview) URL.revokeObjectURL(entry.preview);
+  // Only dropped from this checklist — the file on the server is swept up
+  // later if nothing ends up referring to it.
+  state.media.splice(+rm.dataset.rm, 1);
+  renderMedia();
+}));
+
+$("general-notes").addEventListener("input", function (e) {
+  state.generalNotes = e.target.value.slice(0, 4000);
+});
+
+/* ---------------- step 3: review + signature ---------------- */
+
+function renderReview() {
+  var counts = { rated: 0, total: 0, poor: 0 };
+  state.rooms.forEach(function (room) {
+    room.items.forEach(function (item) {
+      counts.total++;
+      if (item.condition) counts.rated++;
+      if (item.condition === "Poor") counts.poor++;
+    });
+  });
+
+  $("review").innerHTML =
+    "<dt>Name</dt><dd>" + esc($("f-name").value.trim()) + "</dd>" +
+    "<dt>Email</dt><dd>" + esc($("f-email").value.trim()) + "</dd>" +
+    "<dt>Property</dt><dd>" + esc($("f-address").value.trim()) + "</dd>" +
+    "<dt>Rooms</dt><dd>" + state.rooms.length + "</dd>";
+
+  var blank = counts.total - counts.rated;
+  var pills = ['<span class="pill">' + counts.rated + " of " + counts.total + " items rated</span>"];
+  if (counts.poor) pills.push('<span class="pill poor">' + counts.poor + " marked poor</span>");
+  if (blank) pills.push('<span class="pill blank">' + blank + " left blank</span>");
+  var files = state.media.filter(function (m) { return m.id; }).length;
+  if (files) pills.push('<span class="pill">' + files + (files === 1 ? " file" : " files") + " attached</span>");
+  if (state.generalNotes.trim()) pills.push('<span class="pill">general notes added</span>');
+  $("tally").innerHTML = pills.join("");
+}
+
+/* A signature canvas, backed at device resolution and scaled down by CSS so a
+   line drawn with a finger or a stylus is sharp on a phone screen. There are
+   two of these — the tenant's and the agent's — so it's built rather than
+   written twice. */
+function signaturePad(canvasId, wrapId, onChange) {
+  var canvas = $(canvasId), ctx = canvas.getContext("2d"), wrap = $(wrapId);
+  var drawing = false, last = null, signed = false;
+
+  function size() {
+    var ratio = window.devicePixelRatio || 1;
+    // Measured from the wrapper, whose height is set in CSS, rather than from
+    // the canvas — a canvas can be inflated by the very attributes this is
+    // about to set, and measuring it would feed that back in a loop.
+    // clientWidth/Height rather than the bounding rect: it excludes the
+    // wrapper's border, so it is exactly the canvas's own CSS size and the ink
+    // lands under the finger.
+    var box = { width: wrap.clientWidth, height: wrap.clientHeight };
+    if (!box.width || !box.height) return;
+    // Belt and braces: whatever the measurement says, the backing store stays
+    // within something a phone can allocate and a person can sign in.
+    box = { width: Math.min(box.width, 2000), height: Math.min(box.height, 400) };
+    // Re-sizing clears the bitmap, so keep what's there and put it back.
+    var previous = signed ? canvas.toDataURL() : null;
+    canvas.width = Math.round(box.width * ratio);
+    canvas.height = Math.round(box.height * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#111827";
+    if (previous) {
+      var img = new Image();
+      img.onload = function () { ctx.drawImage(img, 0, 0, box.width, box.height); };
+      img.src = previous;
+    }
+  }
+
+  function point(e) {
+    var box = canvas.getBoundingClientRect();
+    return { x: e.clientX - box.left, y: e.clientY - box.top };
+  }
+
+  canvas.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    // Marked as signed first, and the capture attempted after inside a guard:
+    // setPointerCapture throws on some browsers for a pointer that has already
+    // gone, and when it did, every line below it was skipped — the ink never
+    // appeared and the signature never counted, with nothing said about it.
+    drawing = true;
+    signed = true;
+    last = point(e);
+    ctx.beginPath();
+    // A tap with no movement should still leave a mark, or a dotted "i" vanishes.
+    ctx.arc(last.x, last.y, 1.1, 0, Math.PI * 2);
+    ctx.fillStyle = "#111827";
+    ctx.fill();
+    wrap.classList.add("signed");
+    if (onChange) onChange();
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* drawing works without it */ }
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var p = point(e);
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    last = p;
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (type) {
+    canvas.addEventListener(type, function () { drawing = false; });
+  });
+
+  window.addEventListener("resize", size);
+
+  return {
+    size: size,
+    isSigned: function () { return signed; },
+    dataUrl: function () { return canvas.toDataURL("image/png"); },
+    clear: function () {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      signed = false;
+      wrap.classList.remove("signed");
+      if (onChange) onChange();
+    }
+  };
+}
+
+var tenantPad = signaturePad("sig", "sigwrap", updateSignGate);
+var agentPad = signaturePad("agent-sig", "agent-sigwrap", updateSignGate);
+
+/**
+ * What still has to happen before this can be signed, or null when nothing
+ * does. The button is never left disabled with no explanation — a dead button
+ * and a silent page is indistinguishable from a broken app, and that is what
+ * "we can't submit" turns out to mean nearly every time.
+ */
+function whatsMissing() {
+  if (!$("certify").checked) {
+    return { message: "Tick the certification box above before signing.", focus: "certify" };
+  }
+  if (!tenantPad.isSigned()) {
+    return { message: "Add the tenant's signature — sign in the box above.", focus: "sigwrap" };
+  }
+  return null;
+}
+
+/** Clears the nudge once the thing it was asking for has been done. */
+function updateSignGate() {
+  if (state.step !== 2) return;
+  if (!whatsMissing()) $("err-sign").hidden = true;
+}
+
+$("clear-sig").addEventListener("click", tenantPad.clear);
+$("clear-agent-sig").addEventListener("click", agentPad.clear);
+$("certify").addEventListener("change", updateSignGate);
+
+/* ---------------- submit ---------------- */
+
+function submit() {
+  var agentName = $("f-agent").value.trim();
+
+  var payload = {
+    name: $("f-name").value.trim(),
+    email: $("f-email").value.trim(),
+    address: $("f-address").value.trim(),
+    bedrooms: state.bedrooms,
+    bathrooms: state.bathrooms,
+    rooms: state.rooms,
+    generalNotes: state.generalNotes,
+    // Only what finished uploading; anything still in flight or failed is not
+    // referred to, so the server never has to reason about a half-file.
+    attachments: state.media.filter(function (m) { return m.id; }).map(function (m) {
+      return { id: m.id, mime: m.mime, name: m.name, size: m.size };
+    }),
+    signature: tenantPad.dataUrl(),
+    certified: $("certify").checked,
+    // So the server can retire the draft this grew out of.
+    draftId: serverDraftId || undefined
+  };
+  // A named agent goes on the record whether or not they signed here — the PDF
+  // prints them a line to sign on the paper copy. A signature without a name
+  // can't be attributed, so it's dropped rather than sent.
+  if (agentName) {
+    payload.agentName = agentName;
+    if (agentPad.isSigned()) payload.agentSignature = agentPad.dataUrl();
+  }
+
+  $("next").disabled = true;
+  $("next").textContent = "Saving…";
+  $("err-sign").hidden = true;
+
+  return fetch("/api/checklists", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  })
+    .then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) throw new Error(data.error || "That didn't save. Please try again.");
+        return data;
+      });
+    })
+    .then(function (data) {
+      // Signed and stored — the draft has done its job.
+      clearDraft();
+      $("pdf-link").href = data.pdf;
+      $("done-sub").textContent = "Signed " + new Date().toLocaleString() + ".";
+      go(3);
+    })
+    .catch(function (err) {
+      // Nothing is lost here: the draft is still saved, so the answer is
+      // always "try again", never "start over".
+      var network = /fail|network|load/i.test(err.message || "");
+      $("err-sign").textContent = (network
+        ? "Couldn't reach the server. Your checklist is saved on this phone — check your signal and try again."
+        : err.message) + " (Nothing has been lost.)";
+      $("err-sign").hidden = false;
+      $("next").disabled = false;
+      $("next").textContent = "Sign and save PDF";
+      saveDraft(true);
+    });
+}
+
+/* ---------------- navigation ---------------- */
+
+function go(step) {
+  state.step = step;
+  STEPS.forEach(function (id, i) { $(id).hidden = i !== step; });
+  $("progress").style.width = ((step + 1) / STEPS.length) * 100 + "%";
+  $("step-label").textContent = step === 3 ? "Done" : "Step " + (step + 1) + " of 3";
+  $("back").hidden = step === 0 || step === 3;
+  $("actions").hidden = step === 3;
+  $("next").disabled = false;
+
+  if (step === 1) { renderRooms(); $("next").textContent = "Review and sign"; }
+  else if (step === 2) {
+    renderReview();
+    $("sig-who").textContent = $("f-name").value.trim() || "the tenant";
+    var agent = $("f-agent").value.trim();
+    $("agent-card").hidden = !agent;
+    $("agent-who").textContent = agent;
+    if (!agent) agentPad.clear(); // a name cleared on the way back takes its signature with it
+    $("next").textContent = "Sign and save PDF";
+    $("err-sign").hidden = true;
+    // Only measurable once the section is on screen.
+    requestAnimationFrame(function () {
+      tenantPad.size();
+      if (agent) agentPad.size();
+    });
+  } else if (step === 0) {
+    $("next").textContent = "Continue";
+  }
+  window.scrollTo({ top: 0 });
+}
+
+function onNextClick() {
+  if (state.step === 0) {
+    var problem = detailsProblem();
+    if (problem) {
+      $("err-details").textContent = problem.message;
+      $("err-details").hidden = false;
+      flagProblem(problem.message, problem.focus);
+      return;
+    }
+    $("err-details").hidden = true;
+    $("next").disabled = true;
+    $("next").textContent = "Building…";
+    buildRooms()
+      .then(function () { go(1); })
+      .catch(function () {
+        flagProblem("Couldn't build the checklist. Check your connection and try again.", null);
+        $("err-details").textContent = "Couldn't build the checklist. Check your connection and try again.";
+        $("err-details").hidden = false;
+      })
+      // Whatever happens, the button comes back: a Continue that stays dead
+      // after a failed tap is indistinguishable from a broken app.
+      .then(function () {
+        $("next").disabled = false;
+        if (state.step === 0) $("next").textContent = "Continue";
+      });
+    return;
+  }
+  if (state.step === 1) {
+    if (!state.rooms.length) return;
+    // Signing while a video is still going up would drop it from the record.
+    if (state.media.some(function (m) { return m.busy; })) {
+      $("err-media").textContent = "Still uploading — one moment.";
+      $("err-media").hidden = false;
+      flagProblem("Still uploading a photo or video — one moment.", "media");
+      return;
+    }
+    go(2);
+    return;
+  }
+  if (state.step === 2) {
+    var missing = whatsMissing();
+    if (missing) {
+      $("err-sign").textContent = missing.message;
+      $("err-sign").hidden = false;
+      flagProblem(missing.message, missing.focus);
+      return;
+    }
+    submit();
+  }
+
+}
+
+function onBackClick() { go(Math.max(0, state.step - 1)); }
+
+$("start-over").addEventListener("click", function () {
+  clearDraft();
+  location.reload();
+});
+
+/* ---------------- boot ---------------- */
+
+fetch("/api/templates")
+  .then(function (r) { return r.json(); })
+  .then(function (data) {
+    state.templates = data.templates;
+    if (Array.isArray(data.conditions)) state.conditions = data.conditions;
+    if (data.maxCount) state.maxCount = data.maxCount;
+    if (data.maxAttachments) state.maxAttachments = data.maxAttachments;
+    // The wording is served rather than written here, so the page, the stored
+    // record and the PDF can't drift apart.
+    if (data.certification) $("certification-text").textContent = data.certification;
+    if (Array.isArray(data.acknowledgements)) {
+      $("acknowledgements").innerHTML = data.acknowledgements
+        .map(function (t) { return "<li>" + esc(t) + "</li>"; }).join("");
+    }
+    renderCounts();
+  })
+  .catch(function () { renderCounts(); });
+
+renderCounts();
+// A checklist left behind by a reload comes back; otherwise this is step one.
+if (!restoreDraft()) go(0);
+</script>
+</body>
+</html>

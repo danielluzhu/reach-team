@@ -1,0 +1,12 @@
+{
+  "name": "tenant-crm",
+  "private": true,
+  "scripts": {
+    "dev": "bun run --watch server.ts",
+    "start": "bun run server.ts",
+    "users": "bun run users.ts"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}
