@@ -4,7 +4,8 @@
   "scripts": {
     "dev": "bun run --watch server.ts",
     "start": "bun run server.ts",
-    "users": "bun run users.ts"
+    "users": "bun run users.ts",
+    "calendar": "bun run calendar-cli.ts"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1"
