@@ -324,3 +324,176 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   };
 }
 
+const insertEvent = db.prepare(
+  `INSERT OR IGNORE INTO tour_events
+     (key, title, starts_at, payload, payload_sig, added_by, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?)`
+);
+const readEvent = db.prepare(`SELECT * FROM tour_events WHERE key = ?`);
+/**
+ * Re-queues an existing row with new details. `event_id` is left alone: it is
+ * what tells flushQueue to update the event that already exists rather than
+ * book another one, and `attempts` is reset so a row that had given up gets a
+ * fresh run at it.
+ */
+const updateEventRow = db.prepare(
+  `UPDATE tour_events
+     SET title = ?, starts_at = ?, payload = ?, payload_sig = ?,
+         state = 'pending', attempts = 0, last_error = NULL
+   WHERE key = ?`
+);
+/** Moves a queue row onto the new key when the tour's identity was edited. */
+const rekeyEvent = db.prepare(`UPDATE tour_events SET key = ? WHERE key = ?`);
+
+type QueueRow = { key: string; payload_sig: string; state: string; event_id: string | null };
+
+/** How many of {prospect, property, date} two tours must share to be the same tour. */
+const REKEY_MIN_MATCHES = 2;
+
+/**
+ * Pairs a tour that appeared in this save with one that vanished in it.
+ *
+ * Editing the prospect, the property or the date changes the key, so the same
+ * tour looks like one row disappearing and an unrelated one arriving. Both
+ * sides of that are visible in a single save, which is what makes the pairing
+ * possible at all: a vanished tour that agrees with an arrived tour on two of
+ * the three identity fields is that tour, moved.
+ *
+ * Only rows that actually vanished are candidates, which is what keeps a
+ * genuine re-tour safe — when a prospect tours again a few days later, the
+ * earlier row is still on the sheet, so there is nothing to pair with and the
+ * second tour books its own event.
+ */
+function pairRekeyed(
+  addedKeys: string[],
+  removed: Map<string, TourEvent>,
+  events: Map<string, TourEvent>
+): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const taken = new Set<string>();
+  for (const newKey of addedKeys) {
+    const now = events.get(newKey)!;
+    let best: { key: string; score: number } | undefined;
+    for (const [oldKey, was] of removed) {
+      if (taken.has(oldKey)) continue;
+      const score =
+        Number(was.identity.name.toLowerCase() === now.identity.name.toLowerCase()) +
+        Number(was.identity.street.toLowerCase() === now.identity.street.toLowerCase()) +
+        Number(was.identity.date === now.identity.date);
+      if (score >= REKEY_MIN_MATCHES && (!best || score > best.score)) best = { key: oldKey, score };
+    }
+    if (best) {
+      pairs.set(newKey, best.key);
+      taken.add(best.key);
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Of the rows sharing one key, the one whose details should be on the calendar.
+ *
+ * Two rows can share a key: somebody re-tours the same prospect at the same
+ * property on the same day and adds a second line with the new time rather
+ * than editing the first. The later entry is the one that is meant to happen,
+ * so a row that wasn't on the sheet before this save wins over one that was.
+ */
+function chooseRow(rows: { event: TourEvent; wasThereBefore: boolean }[]): TourEvent {
+  const fresh = rows.filter((r) => !r.wasThereBefore);
+  return (fresh.length ? fresh[fresh.length - 1]! : rows[rows.length - 1]!).event;
+}
+
+export type EnqueueResult = {
+  /** Tours booked for the first time. */
+  created: TourEvent[];
+  /** Tours whose event already exists and is being brought up to date. */
+  updated: TourEvent[];
+  /** Tours that left the sheet and whose events were left alone. */
+  vanished: TourEvent[];
+};
+
+/**
+ * Works out what this save did to the tours sheet, and queues the calendar
+ * work it implies: book the new ones, update the edited ones, and say so when
+ * one disappeared.
+ *
+ * The comparison is by tour identity, never by row index — the sheets API
+ * sends the whole sheet on every save and rows are re-sorted and inserted
+ * above one another constantly.
+ */
+export function enqueueNewTours(
+  before: any[][],
+  after: any[][],
+  columns: any[],
+  addedBy: string
+): EnqueueResult {
+  const beforeRowJson = new Set(before.map((r) => JSON.stringify(r)));
+
+  const beforeKeys = new Map<string, TourEvent>();
+  for (const row of before) {
+    const e = tourEventFrom(row, columns);
+    if (e) beforeKeys.set(e.key, e);
+  }
+
+  // Group the sheet as it stands now by key, so duplicate lines for one tour
+  // resolve to a single event before anything is queued.
+  const grouped = new Map<string, { event: TourEvent; wasThereBefore: boolean }[]>();
+  for (const row of after) {
+    const e = tourEventFrom(row, columns);
+    if (!e) continue;
+    const bucket = grouped.get(e.key) ?? [];
+    bucket.push({ event: e, wasThereBefore: beforeRowJson.has(JSON.stringify(row)) });
+    grouped.set(e.key, bucket);
+  }
+  const events = new Map<string, TourEvent>();
+  for (const [key, rows] of grouped) events.set(key, chooseRow(rows));
+
+  const addedKeys = [...events.keys()].filter((k) => !beforeKeys.has(k));
+  const removed = new Map([...beforeKeys].filter(([k]) => !events.has(k)));
+  const rekeyed = pairRekeyed(addedKeys, removed, events);
+
+  const result: EnqueueResult = { created: [], updated: [], vanished: [] };
+  const now = new Date().toISOString();
+
+  for (const [key, e] of events) {
+    const payload = JSON.stringify(e);
+    const sig = createHash("sha256").update(payload).digest("hex").slice(0, 16);
+    const startsAt = e.start ?? e.allDayOn ?? "";
+
+    // The tour was edited in a way that changed its key. Move the existing
+    // queue row onto the new key first, so what follows treats it as the
+    // update it is instead of booking a second event.
+    const oldKey = rekeyed.get(key);
+    if (oldKey && readEvent.get(oldKey)) {
+      rekeyEvent.run(key, oldKey);
+      removed.delete(oldKey);
+    }
+
+    const existing = readEvent.get(key) as QueueRow | undefined;
+    if (!existing) {
+      // A tour with no queue row that was *already on the sheet* before this
+      // save predates the feature — the sheet holds months of them. Booking
+      // those here would fire an invitation for every historic tour the first
+      // time somebody typed anything. They are `calendar backfill`'s job.
+      if (beforeKeys.has(key)) continue;
+      insertEvent.run(key, e.title, startsAt, payload, sig, addedBy, now);
+      result.created.push(e);
+      continue;
+    }
+    if (existing.payload_sig === sig) continue;
+
+    // Same tour, different details. Whether the event exists yet decides what
+    // happens: if it does, flushQueue will edit it in place; if it is still
+    // waiting to be created, this simply corrects what will be sent.
+    updateEventRow.run(e.title, startsAt, payload, sig, key);
+    if (existing.event_id) result.updated.push(e);
+  }
+
+  // A tour that left the sheet keeps its event. Deleting somebody else's
+  // meeting because a row was removed — or because a page saved a stale copy —
+  // is not a call this should make on its own.
+  for (const e of removed.values()) result.vanished.push(e);
+
+  return result;
+}
+
