@@ -167,13 +167,22 @@ export function setPropertyCity(city: string, updatedBy: string) {
 export function streetOf(location: string): string {
   let s = location.trim().replace(/\s+/g, " ").replace(/,+$/, "");
   const city = propertyCity();
-  // The city is the reliable end of the street line, because the sheet writes
-  // it both with and without the comma before it. Without one configured, the
-  // first comma is the best guess available.
-  s = city
-    ? s.split(new RegExp(`,?\\s+${city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"))[0]!
-    : s.split(",")[0]!;
-  return s.trim().replace(/,+$/, "");
+  // The city is the reliable end of the street line. The separator before it is
+  // not reliable at all: the sheet has it with a comma, with just a space, and
+  // — from at least one paste — with nothing at all ("54th StSeattle, WA"). So
+  // the separator is optional, and a match that would leave nothing behind is
+  // ignored, which protects a street that has the city in its own name.
+  if (city) {
+    const escaped = city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const head = s.split(new RegExp(`,?\\s*${escaped}\\b`, "i"))[0]!.trim();
+    // A street line is a number and at least one name word. Anything shorter
+    // means the city name is part of the street itself ("123 Seattle Blvd"),
+    // and cutting there would throw the address away.
+    if (head.split(/\s+/).filter(Boolean).length >= 2) s = head;
+  } else {
+    s = s.split(",")[0]!;
+  }
+  return s.trim().replace(/[,\s]+$/, "");
 }
 
 /** The street line expanded back to something Google Maps can pin. */
@@ -505,6 +514,11 @@ const claimPending = db.prepare(
   `SELECT key, payload, attempts, event_id FROM tour_events
    WHERE state = 'pending' AND attempts < ? ORDER BY created_at LIMIT ?`
 );
+/** One named row, for a self-test that must not post anybody else's tour. */
+const claimOne = db.prepare(
+  `SELECT key, payload, attempts, event_id FROM tour_events
+   WHERE state = 'pending' AND attempts < ? AND key = ?`
+);
 const markSent = db.prepare(
   `UPDATE tour_events SET state = 'sent', event_id = ?, event_url = ?,
      sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE key = ?`
@@ -524,9 +538,9 @@ const MAX_ATTEMPTS = 6;
  * failed MAX_ATTEMPTS times moves to 'failed' so it stops being retried every
  * thirty seconds forever — `bun run calendar retry` puts it back.
  */
-export async function flushQueue(limit = 10): Promise<void> {
+export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
   if (!calendarConfigured()) return;
-  const pending = claimPending.all(MAX_ATTEMPTS, limit) as {
+  const pending = (onlyKey ? claimOne.all(MAX_ATTEMPTS, onlyKey) : claimPending.all(MAX_ATTEMPTS, limit)) as {
     key: string;
     payload: string;
     attempts: number;
