@@ -139,3 +139,38 @@ if (hasOldInvites) {
     SELECT username, display_name, code_hash, created_at, used_at FROM invites`);
   db.run(`DROP TABLE invites`);
 }
+
+/**
+ * One row per tour that has been picked up for a Google Calendar event.
+ *
+ * This is a queue rather than a fire-and-forget call for two reasons. A save
+ * must never fail because Google is slow or down — the tour row is the record
+ * that matters, the invite is a convenience — so posting happens after the
+ * save has already committed, and a failure just leaves a row to retry. And
+ * `key` being the primary key is what stops a second event: the sheets API
+ * saves the whole tours sheet on every edit, so the same tour is seen again on
+ * every subsequent save, and `INSERT OR IGNORE` is the whole dedupe.
+ *
+ * `key` is derived from the tour's identity (prospect, property, date), not
+ * from its row position: rows get re-sorted and inserted above one another
+ * constantly, and a position-based key would re-invite everybody the first
+ * time somebody sorted the sheet.
+ */
+db.run(`
+  CREATE TABLE IF NOT EXISTS tour_events (
+    key         TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    starts_at   TEXT NOT NULL,
+    payload     TEXT NOT NULL,
+    payload_sig TEXT NOT NULL,
+    state       TEXT NOT NULL DEFAULT 'pending',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    last_error  TEXT,
+    event_id    TEXT,
+    event_url   TEXT,
+    added_by    TEXT,
+    created_at  TEXT NOT NULL,
+    sent_at     TEXT
+  )`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_tour_events_state ON tour_events(state, attempts)`);
