@@ -83,3 +83,175 @@ export function setGuideEmails(map: Record<string, string>, updatedBy: string) {
   writeSetting.run(GUIDES_KEY, JSON.stringify(map), updatedBy);
 }
 
+export type TourEvent = {
+  key: string;
+  title: string;
+  location: string;
+  description: string;
+  guests: string[];
+  /** Local wall time, "YYYY-MM-DD HH:mm:ss". Absent when the tour has no time. */
+  start?: string;
+  end?: string;
+  /** Set instead of start/end when the row has a date but no time. */
+  allDayOn?: string;
+  timeZone: string;
+  virtual: boolean;
+  /** Guides named on the row that have no address on file. */
+  unknownGuides: string[];
+  /**
+   * The three fields `key` is derived from, kept alongside it so a save that
+   * changes one of them can still be recognised as an edit of an existing
+   * tour rather than a brand new one. See `pairRekeyed`.
+   */
+  identity: { name: string; street: string; date: string };
+};
+
+/** Column name → index, so a re-ordered sheet doesn't quietly read the wrong field. */
+function columnIndex(columns: any[]): Record<string, number> {
+  const idx: Record<string, number> = {};
+  columns.forEach((c, i) => {
+    if (c && typeof c.name === "string") idx[c.name.trim().toLowerCase()] = i;
+  });
+  return idx;
+}
+
+const cell = (row: any[], idx: Record<string, number>, name: string): string => {
+  const i = idx[name.toLowerCase()];
+  const v = i === undefined ? "" : row[i];
+  return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+};
+
+/**
+ * Full postal address for each property, keyed by the street line as the sheet
+ * writes it. Which buildings a company manages is its own business, so this
+ * lives in settings rather than in the source — see `calendar properties`.
+ * A property with no entry keeps whatever the sheet said.
+ */
+export function propertyAddresses(): Record<string, string> {
+  const row = readSetting.get(PROPERTIES_KEY) as { value: string } | undefined;
+  if (!row) return {};
+  try {
+    const out: Record<string, string> = {};
+    for (const [street, full] of Object.entries(JSON.parse(row.value))) {
+      if (typeof full === "string") out[street.trim().toLowerCase()] = full;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function setPropertyAddresses(map: Record<string, string>, updatedBy: string) {
+  writeSetting.run(PROPERTIES_KEY, JSON.stringify(map), updatedBy);
+}
+
+/**
+ * The city the properties are in, used to find where the street line ends.
+ * Configured rather than hard-coded, so this reads the same for anyone.
+ */
+export function propertyCity(): string {
+  const row = readSetting.get(CITY_KEY) as { value: string } | undefined;
+  return row ? String(JSON.parse(row.value) ?? "") : "";
+}
+
+export function setPropertyCity(city: string, updatedBy: string) {
+  writeSetting.run(CITY_KEY, JSON.stringify(city), updatedBy);
+}
+
+/**
+ * The street line, which is what goes in the title. The sheet writes the same
+ * property a dozen ways ("12 Example Ave NE", "…, Springfield, ST 12345, USA",
+ * "…, Springfield, 12345"), so everything from the city onwards is dropped and
+ * a unit number, if there is one, is kept.
+ */
+export function streetOf(location: string): string {
+  let s = location.trim().replace(/\s+/g, " ").replace(/,+$/, "");
+  const city = propertyCity();
+  // The city is the reliable end of the street line, because the sheet writes
+  // it both with and without the comma before it. Without one configured, the
+  // first comma is the best guess available.
+  s = city
+    ? s.split(new RegExp(`,?\\s+${city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i"))[0]!
+    : s.split(",")[0]!;
+  return s.trim().replace(/,+$/, "");
+}
+
+/** The street line expanded back to something Google Maps can pin. */
+export function fullAddress(street: string): string {
+  const base = street.split(/\s+(?:#|Unit)\s*/i)[0]!.trim();
+  const known = propertyAddresses()[base.toLowerCase()];
+  if (!known) return street;
+  const unit = street.slice(base.length).trim();
+  if (!unit) return known;
+  // Keep the unit with the street, before the city.
+  return known.replace(base, `${base} ${unit}`);
+}
+
+/**
+ * "2:30PM", "7.00pm", "12:50PM (1:10PM actual)" → 24h "14:30", plus whatever
+ * was in the parentheses. The sheet uses the bracket to record that a tour
+ * moved; the booked time is the one outside it, and the note is carried into
+ * the description rather than thrown away.
+ */
+export function parseTime(raw: string): { hhmm: string | null; note: string } {
+  let t = raw.trim();
+  let note = "";
+  const paren = t.match(/^(.*?)\s*\((.*?)\)\s*$/);
+  if (paren) {
+    t = paren[1]!.trim();
+    note = paren[2]!.trim();
+  }
+  t = t.replace(/\./g, ":").trim();
+  const m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i);
+  if (!m) return { hhmm: null, note };
+  let h = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  const ap = m[3]!.toLowerCase();
+  if (h > 12 || min > 59) return { hhmm: null, note };
+  if (ap === "p" && h !== 12) h += 12;
+  if (ap === "a" && h === 12) h = 0;
+  return { hhmm: `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`, note };
+}
+
+function addMinutes(hhmm: string, mins: number): string {
+  const [h, m] = hhmm.split(":").map(Number) as [number, number];
+  const total = h * 60 + m + mins;
+  // A late-evening tour plus 30 minutes stays on the same day in practice;
+  // clamp rather than roll over so an event can never start after it ends.
+  const capped = Math.min(total, 23 * 60 + 59);
+  return `${String(Math.floor(capped / 60)).padStart(2, "0")}:${String(capped % 60).padStart(2, "0")}`;
+}
+
+/** Guides are written "Andrew", "Andrew/David", "Harsh Andrew". */
+function guideNames(raw: string): string[] {
+  return raw
+    .split(/[/,&]|\s+and\s+|\s+/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * The sheet has no column for it — a virtual tour is only ever mentioned in
+ * the notes, so that is where it has to be read from.
+ */
+const VIRTUAL = /\b(virtual|zoom|facetime|video tour)\b/i;
+
+/**
+ * A stable identity for a tour: who, where, which day. Deliberately not the
+ * time — a tour moved by an hour is the same tour, and re-keying on time would
+ * book a second event every time somebody nudged one.
+ *
+ * Date is in the key even though it can be edited, because two tours by the
+ * same prospect at the same property on different days are genuinely two tours
+ * and both need booking — a prospect who tours on the 9th and comes back on
+ * the 12th is a real pattern, not a typo. A tour moved to another *day*
+ * therefore changes key, and `pairRekeyed` is what stops that looking like a
+ * new tour.
+ */
+function tourKey(name: string, street: string, date: string): string {
+  return createHash("sha256")
+    .update([name, street, date].map((s) => s.toLowerCase().replace(/\s+/g, " ").trim()).join("|"))
+    .digest("hex")
+    .slice(0, 32);
+}
+
