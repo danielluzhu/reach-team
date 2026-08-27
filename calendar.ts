@@ -255,3 +255,72 @@ function tourKey(name: string, street: string, date: string): string {
     .slice(0, 32);
 }
 
+/**
+ * A tours row → the event to create, or null if the row isn't a bookable tour.
+ *
+ * Blank spacer rows, and rows with no date, are skipped rather than queued:
+ * the sheet always carries a few, and an event with no date is not useful to
+ * anyone.
+ */
+export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
+  const idx = columnIndex(columns);
+  const name = cell(row, idx, "Name");
+  const location = cell(row, idx, "Location");
+  const date = cell(row, idx, "Date");
+  if (!name || !location || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+
+  const street = streetOf(location);
+  const notes = cell(row, idx, "Personal Opinion");
+  const virtual = VIRTUAL.test(notes);
+  const guides = guideNames(cell(row, idx, "Tour Guide"));
+
+  const known = guideEmails();
+  const guestSet = new Set(STANDING_GUESTS);
+  const unknownGuides: string[] = [];
+  for (const g of guides) {
+    const email = known[g.toLowerCase()];
+    if (email) guestSet.add(email);
+    else unknownGuides.push(g);
+  }
+
+  const title =
+    `${street} ${name} <> ${guides.join(" & ") || "unassigned"}` + (virtual ? " (Virtual)" : "");
+
+  const { hhmm, note: timeNote } = parseTime(cell(row, idx, "Time"));
+  const endCell = parseTime(cell(row, idx, "End Time")).hhmm;
+
+  const phone = cell(row, idx, "Phone");
+  const lines = [
+    `Prospect: ${name}`,
+    `Phone: ${phone || "(none on file)"}`,
+  ];
+  const add = (label: string, value: string) => {
+    if (value && !["x", "nil"].includes(value.toLowerCase())) lines.push(`${label}: ${value}`);
+  };
+  add("Occupation", cell(row, idx, "Career"));
+  add("Lease type", cell(row, idx, "Lease Type"));
+  add("Source", cell(row, idx, "Source"));
+  add("Status", cell(row, idx, "Status"));
+  add("Tenancy", cell(row, idx, "Tenancy?"));
+  lines.push(`Host: ${guides.join(" & ") || "unassigned"}`);
+  lines.push(`Format: ${virtual ? "Virtual tour" : "In person"}`);
+  lines.push(`Address: ${fullAddress(street)}`);
+  if (timeNote) lines.push(`Time note: ${timeNote}`);
+  if (notes) lines.push(`\nNotes: ${notes}`);
+
+  return {
+    key: tourKey(name, street, date),
+    title,
+    location: fullAddress(street),
+    description: lines.join("\n"),
+    guests: [...guestSet],
+    ...(hhmm
+      ? { start: `${date} ${hhmm}:00`, end: `${date} ${endCell ?? addMinutes(hhmm, DEFAULT_MINUTES)}:00` }
+      : { allDayOn: date }),
+    timeZone: TOUR_TIMEZONE,
+    virtual,
+    unknownGuides,
+    identity: { name, street, date },
+  };
+}
+
