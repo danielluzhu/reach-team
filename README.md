@@ -549,6 +549,104 @@ on 21 of 93 rows, always agreeing with that row's Date and Time and never the
 only record of either, so nothing went with it. `crm-backup-2026-07-28-pre-sheets.db`
 is the snapshot taken immediately before.
 
+## Tour calendar events
+
+Adding a row to **Tours & Prospects** books a Google Calendar event for it. The
+event is created by the office Google account, and invites
+the standing guest list (`CALENDAR_STANDING_GUESTS`) plus whoever is in the
+row's Tour Guide column.
+
+    <street address> <prospect> <> <guide>            12 Example Ave NE Marcus <> Lee
+    <street address> <prospect> <> <guide> (Virtual)  78 Cedar Ave E Unit 310 Priya <> Lee (Virtual)
+
+The description carries the prospect's phone and the basics off the row —
+occupation, lease type, source, status, host, in-person or virtual, the full
+address, and the notes. Tours are **30 minutes** unless the row fills in End
+Time, and always in the property's own zone, since every property is in one city.
+A row with a date but no time is booked as all-day; a row missing a name, a
+location or a date is not booked at all, which is what keeps the sheet's blank
+spacer rows off the calendar.
+
+Two things are read out of prose rather than a column, because the sheet has no
+column for either. A tour counts as **virtual** when its notes say so
+("virtual", "Zoom", "FaceTime", "video tour"). And `12:50PM (1:10PM actual)`
+books the time outside the brackets, with what was inside it kept in the
+description as a time note.
+
+### How it gets to Google
+
+`server.ts` cannot talk to Google on its own. A **Google Apps Script web app**,
+deployed under the office account, does the creating; the CRM posts to it with
+a shared secret. Apps Script runs *as* the deploying account, so the event is
+owned by that account and the invites come from it — with no OAuth client to
+register and no refresh token stored on this box.
+
+`google-apps-script/tour-calendar.gs` is the copy of record for what is
+deployed, and carries its own deployment instructions. Set both of these in the
+service environment, then restart:
+
+    CALENDAR_WEBHOOK_URL=https://script.google.com/macros/s/…/exec
+    CALENDAR_WEBHOOK_SECRET=<the same string as SECRET in the .gs file>
+
+With them unset the feature is off: tours are still queued, nothing is sent,
+and the boot log says so. Setting them later sends the backlog.
+
+### Why it is a queue
+
+Posting happens **after** the save has committed, never inside it. A tour
+safely on the sheet but missing an invite is a nuisance; a save refused because
+Google was slow would be a lost tour. Failures are retried on a 30-second loop
+and give up after six attempts, leaving the row to be looked at.
+
+`tour_events.key` is a hash of prospect + property + **date**, and is the
+primary key, which is the whole dedupe. It matters because the sheets API saves
+the entire tours sheet on every keystroke, so every tour is seen again on every
+save. Deliberately not keyed on time: a tour moved by an hour is the same tour,
+and re-keying on time would book a second event every time somebody nudged one.
+Nothing is keyed on row position either, or the first person to sort the sheet
+would re-invite everybody.
+
+### Editing a tour
+
+Editing a booked tour updates its event in place rather than making a new one —
+a new time, a different guide, a different property, a corrected name. The
+guide who is no longer on the tour is uninvited and the new one invited; the
+rest of the guest list is left alone, because removing and re-adding somebody
+re-sends the invitation and throws away the answer they had already given.
+
+Changing the **date** changes the tour's key, so an edited row looks like one
+tour disappearing and another arriving. Both halves are visible in the same
+save, and a tour that vanished is paired with one that arrived when they agree
+on two of {prospect, property, date} — that's `pairRekeyed`, and it is what
+keeps a date change an update instead of a duplicate. Only rows that actually
+vanished are candidates, which is what keeps a genuine re-tour safe: when
+a prospect tours again on the 12th their row from the 9th is still there, so there is
+nothing to pair with and the second tour books its own event.
+
+Adding a **second line** for the same prospect, property and day — rather than
+editing the first — is read as a reschedule, and moves the original event to
+the new time. The later entry wins.
+
+A tour **removed** from the sheet keeps its event, and the removal is logged.
+Cancelling somebody's meeting because a row was deleted, or because a stale
+page saved over it, is not a call this should make on its own.
+
+### From the command line
+
+    bun run calendar status                       # config, and what's queued
+    bun run calendar guides                       # the guide -> email map
+    bun run calendar guides set Lee lee@example.com    # the sheet only holds first names
+    bun run calendar queue [--all]                # failures first
+    bun run calendar retry <key>|--all
+    bun run calendar test                         # book a throwaway event
+    bun run calendar backfill 2026-08-01          # tours already on the sheet
+
+A guide with no address on file still gets an event — it just goes to the
+office mailbox alone, and the miss is logged and shown by `calendar status`.
+
+Tours already on the sheet were never "added" while this was running, so
+nothing queued them; `backfill` is how they get booked.
+
 ## Inspections
 
 The move-in condition checklists are filled in and signed in a **separate app**
