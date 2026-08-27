@@ -7,6 +7,11 @@ import {
   sectionHtml,
   type Section,
 } from "./doc";
+import {
+  enqueueNewTours,
+  flushQueue,
+  startCalendarWorker,
+} from "./calendar";
 import { db, SHEET_VERSIONS_KEPT } from "./db";
 import {
   addInspectionNote,
@@ -1370,6 +1375,65 @@ const saveSheets = db.transaction((sheets: any[], savedBy: string) => {
   return { stale: [], revs: saved };
 });
 
+/** The Tours & Prospects sheet, the only one that books anything. */
+const TOURS_SHEET_ID = "tours";
+
+/**
+ * Books calendar events for tours added by the save that just landed.
+ *
+ * Detached from the response on purpose. Nothing here is allowed to fail the
+ * request or slow it down: the queue row is written synchronously so a crash
+ * between here and the post still leaves the tour to be picked up, and the
+ * post itself happens on the retry loop's terms.
+ */
+function queueTourEvents(
+  sheets: any[],
+  previous: { rows: string } | undefined,
+  username: string
+) {
+  const tours = sheets.find((s: any) => s.id === TOURS_SHEET_ID);
+  if (!tours) return;
+  try {
+    const before = previous ? (JSON.parse(previous.rows) as any[][]) : [];
+    const { created, updated, vanished } = enqueueNewTours(
+      before,
+      tours.rows,
+      tours.columns,
+      username
+    );
+    const when = (e: { start?: string; allDayOn?: string }) =>
+      e.start ?? `${e.allDayOn} (all day)`;
+
+    for (const e of created) {
+      console.log(
+        `[${new Date().toISOString()}] tour queued for calendar by ${username}: ` +
+          `"${e.title}" ${when(e)}` +
+          (e.unknownGuides.length
+            ? ` — no email on file for ${e.unknownGuides.join(", ")}, invited the office only`
+            : "")
+      );
+    }
+    for (const e of updated) {
+      console.log(
+        `[${new Date().toISOString()}] tour edited by ${username}, updating its event: ` +
+          `"${e.title}" ${when(e)}`
+      );
+    }
+    for (const e of vanished) {
+      // Left deliberately: see enqueueNewTours. Logged so a row deleted by
+      // accident doesn't leave an invitation nobody can account for.
+      console.log(
+        `[${new Date().toISOString()}] tour removed from the sheet by ${username}, ` +
+          `its calendar event was left in place: "${e.title}" ${when(e)}`
+      );
+    }
+    if (created.length || updated.length) void flushQueue();
+  } catch (err) {
+    // A malformed row must never cost somebody their save.
+    console.error(`[${new Date().toISOString()}] queueing tour events failed:`, err);
+  }
+}
+
 function validSheet(s: any): boolean {
   return (
     s && typeof s.id === "string" && typeof s.name === "string" &&
@@ -1718,6 +1782,14 @@ const server = Bun.serve({
             { status: 400 }
           );
         }
+        // The rows as stored right now, read before the save overwrites them:
+        // this is the only chance to see which tours are new in this request.
+        const toursBefore = body.sheets.some((s: any) => s.id === TOURS_SHEET_ID)
+          ? (db.query("SELECT rows FROM sheets WHERE id = ?").get(TOURS_SHEET_ID) as
+              | { rows: string }
+              | undefined)
+          : undefined;
+
         const result = saveSheets(body.sheets, user.username);
         if (result.stale.length) {
           // Somebody else has saved since this page loaded. Nothing is written;
@@ -1735,6 +1807,10 @@ const server = Bun.serve({
           `[${new Date().toISOString()}] sheets saved by ${user.username}: ` +
             body.sheets.map((s) => `${s.id}@${result.revs![s.id]} (${s.rows.length} rows)`).join(", ")
         );
+        // Only after the save has committed: a tour that is safely on the
+        // sheet but missing a calendar invite is a nuisance, a save refused
+        // because Google was down would be a lost tour.
+        queueTourEvents(body.sheets, toursBefore, user.username);
         return Response.json({ ok: true, savedAt: new Date().toISOString(), revs: result.revs });
       }
       return new Response("Method not allowed", { status: 405 });
@@ -1742,6 +1818,8 @@ const server = Bun.serve({
     return new Response("Not found", { status: 404 });
   },
 });
+
+startCalendarWorker();
 
 console.log(`Listening on http://${server.hostname}:${server.port}`);
 console.log(`Sign-in required — ${userCount} account${userCount === 1 ? "" : "s"} configured.`);
