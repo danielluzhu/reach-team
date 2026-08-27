@@ -497,3 +497,110 @@ export function enqueueNewTours(
   return result;
 }
 
+export function calendarConfigured(): boolean {
+  return Boolean(WEBHOOK_URL && WEBHOOK_SECRET);
+}
+
+const claimPending = db.prepare(
+  `SELECT key, payload, attempts, event_id FROM tour_events
+   WHERE state = 'pending' AND attempts < ? ORDER BY created_at LIMIT ?`
+);
+const markSent = db.prepare(
+  `UPDATE tour_events SET state = 'sent', event_id = ?, event_url = ?,
+     sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE key = ?`
+);
+const markFailed = db.prepare(
+  `UPDATE tour_events SET state = ?, attempts = attempts + 1, last_error = ? WHERE key = ?`
+);
+
+/** Give up after this many tries and leave the row for a human to look at. */
+const MAX_ATTEMPTS = 6;
+
+/**
+ * Posts whatever is queued to the Apps Script, one at a time.
+ *
+ * Errors are recorded and retried, not thrown: this runs detached from the
+ * request that caused it, and there is nobody left to tell. A row that has
+ * failed MAX_ATTEMPTS times moves to 'failed' so it stops being retried every
+ * thirty seconds forever — `bun run calendar retry` puts it back.
+ */
+export async function flushQueue(limit = 10): Promise<void> {
+  if (!calendarConfigured()) return;
+  const pending = claimPending.all(MAX_ATTEMPTS, limit) as {
+    key: string;
+    payload: string;
+    attempts: number;
+    event_id: string | null;
+  }[];
+
+  for (const row of pending) {
+    const event = JSON.parse(row.payload) as TourEvent;
+    // An id means the event is already on the calendar and this is an edit.
+    const updating = Boolean(row.event_id);
+    try {
+      const res = await fetch(WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret: WEBHOOK_SECRET, event, eventId: row.event_id ?? null }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      const text = await res.text();
+      let body: any = {};
+      try {
+        body = JSON.parse(text);
+      } catch {
+        // Apps Script serves an HTML error page when a deployment is wrong,
+        // which is the single most common way this is misconfigured.
+        throw new Error(
+          `non-JSON reply (HTTP ${res.status}) — check the deployment is "Anyone" ` +
+            `and the URL ends in /exec: ${text.slice(0, 120)}`
+        );
+      }
+      if (!res.ok || !body.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+
+      markSent.run(body.id ?? row.event_id, body.url ?? null, new Date().toISOString(), row.key);
+      console.log(
+        `[${new Date().toISOString()}] calendar event ` +
+          `${updating ? (body.recreated ? "re-created (it had been deleted)" : "updated") : "created"}: ` +
+          `"${event.title}" ${event.start ?? `${event.allDayOn} (all day)`} ` +
+          `→ ${event.guests.join(", ")}`
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const done = row.attempts + 1 >= MAX_ATTEMPTS;
+      markFailed.run(done ? "failed" : "pending", message, row.key);
+      console.error(
+        `[${new Date().toISOString()}] calendar ${updating ? "update" : "booking"} failed ` +
+          `(attempt ${row.attempts + 1}${done ? ", giving up" : ""}) for "${event.title}": ${message}`
+      );
+    }
+  }
+}
+
+let timer: ReturnType<typeof setInterval> | undefined;
+
+/**
+ * Starts the retry loop. Saves kick a flush off immediately, so this only
+ * exists to pick up anything that failed while Google was unreachable.
+ */
+export function startCalendarWorker() {
+  if (timer) return;
+  if (!calendarConfigured()) {
+    console.log(
+      "Calendar events: off (set CALENDAR_WEBHOOK_URL and CALENDAR_WEBHOOK_SECRET to " +
+        "enable — see google-apps-script/tour-calendar.gs)"
+    );
+    return;
+  }
+  const stuck = db
+    .query(`SELECT COUNT(*) AS n FROM tour_events WHERE state = 'pending'`)
+    .get() as { n: number };
+  console.log(
+    `Calendar events: on, inviting ${STANDING_GUESTS.join(", ")} plus the tour guide` +
+      (stuck.n ? ` (${stuck.n} queued from earlier)` : "")
+  );
+  timer = setInterval(() => void flushQueue(), 30_000);
+  // Don't hold the process open just for the retry loop.
+  timer.unref?.();
+  void flushQueue();
+}
