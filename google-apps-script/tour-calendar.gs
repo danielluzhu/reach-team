@@ -46,6 +46,24 @@ function doPost(e) {
     var cal = CalendarApp.getDefaultCalendar();
     var tz = ev.timeZone || 'America/Los_Angeles';
 
+    // An eventId means the tour was edited and the event already exists.
+    if (body.eventId) {
+      var existing = null;
+      try {
+        existing = cal.getEventById(body.eventId);
+      } catch (lookupErr) {
+        existing = null;
+      }
+      if (existing) {
+        updateEvent(existing, ev, tz);
+        return reply({ ok: true, id: existing.getId(), updated: true });
+      }
+      // Somebody deleted it off the calendar. Book it again rather than
+      // failing forever on an id that will never come back.
+      var replacement = createEvent(cal, ev, tz);
+      return reply({ ok: true, id: replacement.getId(), recreated: true });
+    }
+
     var event = createEvent(cal, ev, tz);
     return reply({ ok: true, id: event.getId() });
   } catch (err) {
@@ -65,6 +83,38 @@ function createEvent(cal, ev, tz) {
     return cal.createAllDayEvent(ev.title, parseInTz(ev.allDayOn + ' 00:00:00', tz), options);
   }
   return cal.createEvent(ev.title, parseInTz(ev.start, tz), parseInTz(ev.end, tz), options);
+}
+
+/**
+ * Brings an existing event in line with the sheet: time, title, place, notes
+ * and who is invited.
+ *
+ * Guests are reconciled rather than replaced, because removing and re-adding
+ * somebody re-sends them an invitation and drops the answer they had already
+ * given. Only a guide who is genuinely no longer on the tour is removed.
+ */
+function updateEvent(event, ev, tz) {
+  if (ev.allDayOn) {
+    event.setAllDayDate(parseInTz(ev.allDayOn + ' 00:00:00', tz));
+  } else {
+    event.setTime(parseInTz(ev.start, tz), parseInTz(ev.end, tz));
+  }
+  event.setTitle(ev.title);
+  event.setLocation(ev.location || '');
+  event.setDescription(ev.description || '');
+
+  var wanted = {};
+  (ev.guests || []).forEach(function (g) { wanted[g.toLowerCase()] = true; });
+
+  var present = {};
+  event.getGuestList().forEach(function (guest) {
+    var email = guest.getEmail().toLowerCase();
+    present[email] = true;
+    if (!wanted[email]) event.removeGuest(guest.getEmail());
+  });
+  (ev.guests || []).forEach(function (g) {
+    if (!present[g.toLowerCase()]) event.addGuest(g);
+  });
 }
 
 /**
