@@ -192,7 +192,7 @@ switch (cmd) {
       ]
     );
     console.log(`Queued a test event for ${when} 09:00 with no guests. Posting…`);
-    await flushQueue(1);
+    await flushQueue(1, key);
     const row = db.query("SELECT state, last_error FROM tour_events WHERE key=?").get(key) as any;
     console.log(row.state === "sent" ? "Created — check the calendar." : `Failed: ${row.last_error}`);
     break;
