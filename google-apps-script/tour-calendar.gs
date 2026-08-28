@@ -40,6 +40,43 @@ function doPost(e) {
       return reply({ error: 'unauthorized' });
     }
 
+    // Reading back what the calendar currently says, so the CRM can pick up
+    // an edit a guest made. Ids are asked for explicitly: this never lists
+    // the calendar, only the events the CRM itself booked.
+    if (body.action === 'read') {
+      var cal = CalendarApp.getDefaultCalendar();
+      var tz = body.timeZone || 'America/Los_Angeles';
+      var out = [];
+      var ids = (body.eventIds || []).slice(0, 100);
+      for (var i = 0; i < ids.length; i++) {
+        var found = null;
+        try {
+          found = cal.getEventById(ids[i]);
+        } catch (readErr) {
+          found = null;
+        }
+        if (!found) {
+          out.push({ id: ids[i], missing: true });
+          continue;
+        }
+        var allDay = found.isAllDayEvent();
+        out.push({
+          id: ids[i],
+          title: found.getTitle(),
+          location: found.getLocation(),
+          allDay: allDay,
+          start: allDay
+            ? Utilities.formatDate(found.getAllDayStartDate(), tz, 'yyyy-MM-dd')
+            : Utilities.formatDate(found.getStartTime(), tz, 'yyyy-MM-dd HH:mm:ss'),
+          end: allDay
+            ? Utilities.formatDate(found.getAllDayEndDate(), tz, 'yyyy-MM-dd')
+            : Utilities.formatDate(found.getEndTime(), tz, 'yyyy-MM-dd HH:mm:ss'),
+          updated: found.getLastUpdated().toISOString(),
+        });
+      }
+      return reply({ ok: true, events: out });
+    }
+
     var ev = body.event || {};
     if (!ev.title) return reply({ error: 'missing title' });
 
@@ -78,11 +115,17 @@ function createEvent(cal, ev, tz) {
     guests: (ev.guests || []).join(','),
     sendInvites: true,
   };
+  var event;
   if (ev.allDayOn) {
     // A tour with a date but no time — booked as all-day rather than guessed at.
-    return cal.createAllDayEvent(ev.title, parseInTz(ev.allDayOn + ' 00:00:00', tz), options);
+    event = cal.createAllDayEvent(ev.title, parseInTz(ev.allDayOn + ' 00:00:00', tz), options);
+  } else {
+    event = cal.createEvent(ev.title, parseInTz(ev.start, tz), parseInTz(ev.end, tz), options);
   }
-  return cal.createEvent(ev.title, parseInTz(ev.start, tz), parseInTz(ev.end, tz), options);
+  // A guide who reschedules on their phone should not have to also edit the
+  // sheet — the CRM reads these changes back.
+  event.setGuestsCanModify(true);
+  return event;
 }
 
 /**
@@ -102,6 +145,7 @@ function updateEvent(event, ev, tz) {
   event.setTitle(ev.title);
   event.setLocation(ev.location || '');
   event.setDescription(ev.description || '');
+  event.setGuestsCanModify(true);
 
   var wanted = {};
   (ev.guests || []).forEach(function (g) { wanted[g.toLowerCase()] = true; });
