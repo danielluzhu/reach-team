@@ -556,8 +556,13 @@ event is created by the office Google account, and invites
 the standing guest list (`CALENDAR_STANDING_GUESTS`) plus whoever is in the
 row's Tour Guide column.
 
-    <street address> <prospect> <> <guide>            12 Example Ave NE Marcus <> Lee
-    <street address> <prospect> <> <guide> (Virtual)  78 Cedar Ave E Unit 310 Priya <> Lee (Virtual)
+    <number> <prospect> <> <guide>              12 Marcus <> Lee
+    <number> #<unit> <prospect> <> <guide>      78 #310 Priya <> Lee (Virtual)
+
+The title carries only the street number, plus a unit where there is one: it
+is read in a crowded day view, where the number is the whole of what tells one
+property from another, and it sidesteps how the sheet capitalises a street.
+The location field and the description keep the full postal address.
 
 The description carries the prospect's phone and the basics off the row —
 occupation, lease type, source, status, host, in-person or virtual, the full
