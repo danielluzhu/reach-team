@@ -14,6 +14,7 @@
  *   bun run calendar retry [<key>|--all]          # put failed rows back
  *   bun run calendar test                         # book a throwaway event now
  *   bun run calendar backfill <from> [<to>]       # queue tours already on the sheet
+ *   bun run calendar poll                         # pull guest edits into the sheet
  */
 
 import { db } from "./db";
@@ -23,6 +24,7 @@ import {
   TOUR_TIMEZONE,
   calendarConfigured,
   flushQueue,
+  pollCalendarChanges,
   guideEmails,
   propertyAddresses,
   propertyCity,
@@ -129,6 +131,23 @@ switch (cmd) {
     }
     setPropertyCity(args.join(" "), "cli");
     console.log(`city set to ${args.join(" ")}`);
+    break;
+  }
+
+  case "poll": {
+    if (!calendarConfigured()) die("CALENDAR_WEBHOOK_URL / CALENDAR_WEBHOOK_SECRET not set");
+    const changes = await pollCalendarChanges();
+    if (!changes.length) {
+      console.log("No calendar edits to pull in — the sheet and the calendar agree.");
+      break;
+    }
+    for (const c of changes) {
+      console.log(`  ${c.title}`);
+      for (const [field, [was, now]] of Object.entries(c.fields)) {
+        console.log(`      ${field}: ${was || "(blank)"} → ${now}`);
+      }
+    }
+    console.log(`\n${changes.length} tour(s) updated from the calendar.`);
     break;
   }
 
@@ -257,6 +276,7 @@ switch (cmd) {
       "bun run calendar retry <key>|--all            put failed rows back",
       "bun run calendar test                         book a throwaway event now",
       "bun run calendar backfill <from> [<to>]       queue tours already on the sheet",
+      "bun run calendar poll                         pull guest edits into the sheet",
     ];
     console.log(usage.join("\n"));
     process.exit(cmd ? 1 : 0);

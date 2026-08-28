@@ -613,6 +613,7 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
 }
 
 let timer: ReturnType<typeof setInterval> | undefined;
+let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 /**
  * Starts the retry loop. Saves kick a flush off immediately, so this only
@@ -635,7 +636,236 @@ export function startCalendarWorker() {
       (stuck.n ? ` (${stuck.n} queued from earlier)` : "")
   );
   timer = setInterval(() => void flushQueue(), 30_000);
-  // Don't hold the process open just for the retry loop.
+  // Reading every event back is a heavier call than sending, and a guest's
+  // edit is not urgent — two minutes is soon enough, and it keeps well inside
+  // Apps Script's daily execution budget.
+  pollTimer = setInterval(() => {
+    void pollCalendarChanges().catch((err) =>
+      console.error(`[${new Date().toISOString()}] reading calendar edits failed:`, err.message)
+    );
+  }, 120_000);
+  // Don't hold the process open just for the background loops.
   timer.unref?.();
+  pollTimer.unref?.();
   void flushQueue();
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * Calendar → sheet
+ *
+ * Guests can edit these events, so the calendar can be ahead of the sheet: a
+ * guide who moves a tour on their phone should not have to type it twice.
+ *
+ * This polls rather than being pushed to. The CRM is on the public internet
+ * behind a sign-in and everything it holds is tenant data, so a new endpoint
+ * that Google could POST into is a worse trade than a couple of minutes of
+ * delay — and polling reuses the one secret that already exists instead of
+ * opening a second way in.
+ *
+ * Only when/where is read back. Title and description are derived from the
+ * sheet and would be circular; who is invited belongs to the guide map.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+type RemoteEvent = {
+  id: string;
+  title?: string;
+  location?: string;
+  allDay?: boolean;
+  start?: string;
+  end?: string;
+  updated?: string;
+  missing?: boolean;
+};
+
+const sentEvents = db.prepare(
+  `SELECT key, title, payload, event_id FROM tour_events
+   WHERE state = 'sent' AND event_id IS NOT NULL AND key NOT LIKE 'selftest%'`
+);
+const setPayload = db.prepare(
+  `UPDATE tour_events SET title = ?, starts_at = ?, payload = ?, payload_sig = ? WHERE key = ?`
+);
+
+/** "14:30" → "2:30PM", which is how the sheet's own rows are written. */
+function sheetTime(hhmm: string): string {
+  const [h, m] = hhmm.split(":").map(Number) as [number, number];
+  const ampm = h < 12 ? "AM" : "PM";
+  const hour = h % 12 === 0 ? 12 : h % 12;
+  return `${hour}:${String(m).padStart(2, "0")}${ampm}`;
+}
+
+/**
+ * Asks the calendar what these events say now.
+ *
+ * A batch at a time, because Apps Script has a six-minute ceiling on a single
+ * execution and reading a hundred events is already most of a second each.
+ */
+async function readRemote(ids: string[]): Promise<Map<string, RemoteEvent>> {
+  const out = new Map<string, RemoteEvent>();
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50);
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        secret: WEBHOOK_SECRET,
+        action: "read",
+        eventIds: batch,
+        timeZone: TOUR_TIMEZONE,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const text = await res.text();
+    let body: any;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error(`non-JSON reply reading events: ${text.slice(0, 120)}`);
+    }
+    if (!body.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+    for (const e of body.events as RemoteEvent[]) out.set(e.id, e);
+  }
+  return out;
+}
+
+export type CalendarChange = {
+  key: string;
+  title: string;
+  /** Sheet column name → [what the sheet said, what the calendar says]. */
+  fields: Record<string, [string, string]>;
+};
+
+/**
+ * Pulls guest edits back into the tours sheet.
+ *
+ * Writing straight to the sheets table rather than through the API is
+ * deliberate: this is a background job with no page and no `rev` of its own,
+ * and the version row it records is what makes the change visible and
+ * reversible. A page that was open at the old rev will be told it is stale on
+ * its next save, which is the behaviour the sheet already has for every other
+ * concurrent edit.
+ */
+export async function pollCalendarChanges(): Promise<CalendarChange[]> {
+  if (!calendarConfigured()) return [];
+  const rows = sentEvents.all() as {
+    key: string;
+    title: string;
+    payload: string;
+    event_id: string;
+  }[];
+  if (!rows.length) return [];
+
+  const remote = await readRemote(rows.map((r) => r.event_id));
+
+  const sheet = db.query(`SELECT columns, rows, rev FROM sheets WHERE id = 'tours'`).get() as
+    | { columns: string; rows: string; rev: number }
+    | undefined;
+  if (!sheet) return [];
+  const columns = JSON.parse(sheet.columns) as any[];
+  const sheetRows = JSON.parse(sheet.rows) as any[][];
+  const idx: Record<string, number> = {};
+  columns.forEach((c, i) => {
+    if (c?.name) idx[String(c.name).trim().toLowerCase()] = i;
+  });
+
+  const changes: CalendarChange[] = [];
+  let touched = false;
+
+  for (const row of rows) {
+    const stored = JSON.parse(row.payload) as TourEvent;
+    const got = remote.get(row.event_id);
+    if (!got || got.missing) continue;
+
+    // What the calendar says, in the sheet's own vocabulary.
+    const wants: Record<string, string> = {};
+    if (got.allDay) {
+      if (got.start) wants["date"] = got.start;
+    } else if (got.start && got.end) {
+      const [date, time] = got.start.split(" ");
+      wants["date"] = date!;
+      wants["time"] = sheetTime(time!.slice(0, 5));
+      wants["end time"] = sheetTime(got.end.split(" ")[1]!.slice(0, 5));
+    }
+
+    // Compare against what this event was last built from, not against the
+    // sheet: that way a change made in the sheet and already pushed out is
+    // never mistaken for a change made on the calendar.
+    const had: Record<string, string> = {};
+    if (stored.allDayOn) had["date"] = stored.allDayOn;
+    else if (stored.start && stored.end) {
+      had["date"] = stored.start.split(" ")[0]!;
+      had["time"] = sheetTime(stored.start.split(" ")[1]!.slice(0, 5));
+      had["end time"] = sheetTime(stored.end.split(" ")[1]!.slice(0, 5));
+    }
+
+    const differing = Object.keys(wants).filter((k) => wants[k] !== had[k]);
+    if (!differing.length) continue;
+
+    // The sheet row this event came from, found by the identity it was booked
+    // under rather than by position.
+    const target = sheetRows.find((r) => {
+      const e = tourEventFrom(r, columns);
+      return (
+        e &&
+        e.identity.name.toLowerCase() === stored.identity.name.toLowerCase() &&
+        e.identity.date === stored.identity.date
+      );
+    });
+    if (!target) {
+      console.log(
+        `[${new Date().toISOString()}] calendar edit to "${row.title}" has no matching ` +
+          `sheet row any more; the sheet was left alone`
+      );
+      continue;
+    }
+
+    const fields: Record<string, [string, string]> = {};
+    for (const col of differing) {
+      const at = idx[col];
+      if (at === undefined) continue;
+      fields[col] = [String(target[at] ?? ""), wants[col]!];
+      target[at] = wants[col];
+    }
+    if (!Object.keys(fields).length) continue;
+
+    // Re-derive the event from the row as it now reads, and store that as the
+    // last-known state. Without this the next save would see a difference and
+    // push the guest's own edit straight back at them.
+    const rebuilt = tourEventFrom(target, columns);
+    if (rebuilt) {
+      const payload = JSON.stringify(rebuilt);
+      setPayload.run(
+        rebuilt.title,
+        rebuilt.start ?? rebuilt.allDayOn ?? "",
+        payload,
+        createHash("sha256").update(payload).digest("hex").slice(0, 16),
+        row.key
+      );
+      if (rebuilt.key !== row.key) db.run(`UPDATE tour_events SET key = ? WHERE key = ?`, [rebuilt.key, row.key]);
+    }
+    changes.push({ key: row.key, title: row.title, fields });
+    touched = true;
+  }
+
+  if (touched) {
+    const json = JSON.stringify(sheetRows);
+    db.run(
+      `UPDATE sheets SET rows = ?, rev = rev + 1, updated_at = CURRENT_TIMESTAMP WHERE id = 'tours'`,
+      [json]
+    );
+    const rev = (db.query(`SELECT rev FROM sheets WHERE id = 'tours'`).get() as { rev: number }).rev;
+    db.run(
+      `INSERT INTO sheet_versions (sheet_id, rev, columns, rows, row_count, saved_by)
+       VALUES ('tours', ?, ?, ?, ?, 'google-calendar')`,
+      [rev, sheet.columns, json, sheetRows.length]
+    );
+    for (const c of changes) {
+      const what = Object.entries(c.fields)
+        .map(([f, [was, now]]) => `${f}: ${was || "(blank)"} → ${now}`)
+        .join(", ");
+      console.log(
+        `[${new Date().toISOString()}] calendar edit pulled into the sheet for "${c.title}" — ${what}`
+      );
+    }
+  }
+  return changes;
 }
