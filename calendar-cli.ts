@@ -15,6 +15,7 @@
  *   bun run calendar test                         # book a throwaway event now
  *   bun run calendar backfill <from> [<to>]       # queue tours already on the sheet
  *   bun run calendar poll                         # pull guest edits into the sheet
+ *   bun run calendar refresh                      # re-send every event unchanged
  */
 
 import { db } from "./db";
@@ -25,6 +26,7 @@ import {
   calendarConfigured,
   flushQueue,
   pollCalendarChanges,
+  requeueSentEvents,
   guideEmails,
   propertyAddresses,
   propertyCity,
@@ -131,6 +133,21 @@ switch (cmd) {
     }
     setPropertyCity(args.join(" "), "cli");
     console.log(`city set to ${args.join(" ")}`);
+    break;
+  }
+
+  case "refresh": {
+    if (!calendarConfigured()) die("CALENDAR_WEBHOOK_URL / CALENDAR_WEBHOOK_SECRET not set");
+    const n = requeueSentEvents();
+    if (!n) {
+      console.log("No events to refresh.");
+      break;
+    }
+    console.log(`Re-sending ${n} event(s) so the script's current settings apply to them…`);
+    await flushQueue(n);
+    const stuck = db.query("SELECT title, last_error FROM tour_events WHERE state != 'sent'").all() as any[];
+    for (const s of stuck) console.log(`  still not sent: ${s.title} — ${s.last_error}`);
+    console.log(stuck.length ? `${stuck.length} failed.` : "All refreshed.");
     break;
   }
 
@@ -277,6 +294,7 @@ switch (cmd) {
       "bun run calendar test                         book a throwaway event now",
       "bun run calendar backfill <from> [<to>]       queue tours already on the sheet",
       "bun run calendar poll                         pull guest edits into the sheet",
+      "bun run calendar refresh                      re-send every event unchanged",
     ];
     console.log(usage.join("\n"));
     process.exit(cmd ? 1 : 0);

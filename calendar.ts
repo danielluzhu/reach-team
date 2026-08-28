@@ -727,6 +727,23 @@ async function readRemote(ids: string[]): Promise<Map<string, RemoteEvent>> {
   return out;
 }
 
+const requeueAll = db.prepare(
+  `UPDATE tour_events SET state = 'pending', attempts = 0, last_error = NULL
+   WHERE state = 'sent' AND event_id IS NOT NULL`
+);
+
+/**
+ * Re-sends every event that already exists, unchanged.
+ *
+ * Normally an event is only touched when its tour changed, which is right —
+ * but a setting that lives on the Google side (who may edit it, say) can only
+ * be applied by writing the event again. This is how a change to the Apps
+ * Script reaches events that were booked before it.
+ */
+export function requeueSentEvents(): number {
+  return requeueAll.run().changes;
+}
+
 export type CalendarChange = {
   key: string;
   title: string;
