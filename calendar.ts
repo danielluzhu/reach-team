@@ -197,6 +197,26 @@ export function fullAddress(street: string): string {
 }
 
 /**
+ * The part of the street line that goes in an event title: the number, plus a
+ * unit when there is one. "4544 20th Ave NE" → "4544";
+ * "121 12th Ave E Unit 310" → "121 #310"; "4735 22nd Ave NE # 4" → "4735 #4".
+ *
+ * A title is read in a crowded day view, where the number is the whole of what
+ * distinguishes one property from another — the rest is nine wasted characters.
+ * It also sidesteps how the sheet capitalises: "4544 20th ave ne" and
+ * "4544 20TH AVE NE" both come out as "4544".
+ *
+ * A location with no leading number keeps its whole street line, since there is
+ * nothing shorter to say about it.
+ */
+export function streetLabel(street: string): string {
+  const number = street.match(/^(\d+[A-Za-z]?)\b/);
+  const unit = street.match(/(?:#|\bUnit\b|\bApt\b|\bSte\b)\s*([A-Za-z0-9][A-Za-z0-9-]*)/i);
+  const base = number ? number[1]! : street;
+  return unit ? `${base} #${unit[1]}` : base;
+}
+
+/**
  * "2:30PM", "7.00pm", "12:50PM (1:10PM actual)" → 24h "14:30", plus whatever
  * was in the parentheses. The sheet uses the bracket to record that a tour
  * moved; the booked time is the one outside it, and the note is carried into
@@ -293,7 +313,8 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   }
 
   const title =
-    `${street} ${name} <> ${guides.join(" & ") || "unassigned"}` + (virtual ? " (Virtual)" : "");
+    `${streetLabel(street)} ${name} <> ${guides.join(" & ") || "unassigned"}` +
+    (virtual ? " (Virtual)" : "");
 
   const { hhmm, note: timeNote } = parseTime(cell(row, idx, "Time"));
   const endCell = parseTime(cell(row, idx, "End Time")).hhmm;
