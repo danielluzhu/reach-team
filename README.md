@@ -667,8 +667,14 @@ driveway a company watches is its own business.
     bun run plates defaults --state WA --location "12 Example Ave NE" --notes "Blocking garage"
     bun run plates repeats            # only the plates seen more than once
 
-A report is a plate, a state, and optionally where the car was, a note, and up
-to two photos — the plate itself and a wider shot showing where it sat. The
+A report is a plate, a state, and optionally what the car looks like — colour,
+year, make, model — plus where it was, a note, and up to two photos. The four
+description fields are shown as one phrase ("Grey 2019 Mazda 3") because that
+is how a car is described out loud, and because most reports will only have
+two of them filled in. A plate identifies a car but is not something anyone
+recognises from a window; the description is what makes a report legible to
+somebody who wasn't standing there, including the neighbour being asked to
+stop. A year is four digits or blank — the plate itself and a wider shot showing where it sat. The
 date is today's, taken in the property's timezone rather than the server's, and
 is not something anyone types.
 

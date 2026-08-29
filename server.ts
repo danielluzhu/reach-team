@@ -1831,11 +1831,18 @@ const server = Bun.serve({
         if (saved.error) return platesPage(user, saved.error);
         const photos = saved.ids!;
 
+        const year = String(form.get("year") ?? "").trim();
+        if (year && !/^\d{4}$/.test(year)) return platesPage(user, "A year is four digits, or blank.");
+
         addReport({
           plate,
           state,
           location: String(form.get("location") ?? ""),
           notes: String(form.get("notes") ?? ""),
+          color: String(form.get("color") ?? ""),
+          year,
+          make: String(form.get("make") ?? ""),
+          model: String(form.get("model") ?? ""),
           photos,
           reportedBy: displayName(user),
         });

@@ -13,6 +13,7 @@
 
 import {
   allowCar,
+  describeCar,
   allowedFor,
   disallowCar,
   listAllowed,
@@ -62,7 +63,8 @@ switch (cmd) {
           ? `REPEAT ${r.occurrence}/${r.timesSeen}`
           : "";
       console.log(
-        `${r.reported_on}  ${r.plate_typed.padEnd(10)} ${r.state.padEnd(8)} ${mark.padEnd(24)} ` +
+        `${r.reported_on}  ${r.plate_typed.padEnd(10)} ${r.state.padEnd(4)} ` +
+          `${describeCar(r).padEnd(22)} ${mark.padEnd(24)} ` +
           `${r.location ?? ""}${r.notes ? ` — ${r.notes}` : ""}`
       );
     }

@@ -211,6 +211,26 @@ db.run(`
 db.run(`CREATE INDEX IF NOT EXISTS idx_plate_reports_plate ON plate_reports(plate, reported_on)`);
 
 /**
+ * What the car looks like, added after the fact.
+ *
+ * A plate identifies a car but says nothing anyone can recognise from a
+ * window. "The grey Mazda" is how a car is actually discussed, and it is what
+ * makes a report legible to somebody who wasn't standing there — including the
+ * neighbour being asked to stop.
+ *
+ * Added one at a time so this file can gain another later without a second
+ * migration. Existing rows keep NULL rather than being guessed at.
+ */
+const plateColumns = new Set(
+  (db.query(`PRAGMA table_info(plate_reports)`).all() as { name: string }[]).map((c) => c.name)
+);
+if (plateColumns.size) {
+  for (const column of ["color", "year", "make", "model"]) {
+    if (!plateColumns.has(column)) db.run(`ALTER TABLE plate_reports ADD COLUMN ${column} TEXT`);
+  }
+}
+
+/**
  * Cars that are allowed in the driveway: tenants, a vendor who visits weekly,
  * somebody's own car.
  *

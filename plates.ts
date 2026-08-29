@@ -91,6 +91,10 @@ export type PlateReport = {
   reported_on: string;
   location: string | null;
   notes: string | null;
+  color: string | null;
+  year: string | null;
+  make: string | null;
+  model: string | null;
   photo1: string | null;
   photo2: string | null;
   reported_by: string;
@@ -158,8 +162,9 @@ export type PlateRow = PlateReport & {
 
 const insertReport = db.prepare(
   `INSERT INTO plate_reports
-     (plate, plate_typed, state, reported_on, location, notes, photo1, photo2, reported_by, created_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     (plate, plate_typed, state, reported_on, location, notes,
+      color, year, make, model, photo1, photo2, reported_by, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 );
 
 const allReports = db.query(
@@ -266,9 +271,16 @@ export type NewReport = {
   state: string;
   location?: string;
   notes?: string;
+  color?: string;
+  year?: string;
+  make?: string;
+  model?: string;
   photos: string[];
   reportedBy: string;
 };
+
+/** Blank stays blank rather than becoming an empty string in the record. */
+const orNull = (value?: string) => value?.trim() || null;
 
 export function addReport(report: NewReport): number {
   const normalized = normalizePlate(report.plate);
@@ -277,8 +289,12 @@ export function addReport(report: NewReport): number {
     report.plate.trim(),
     report.state,
     today(),
-    report.location?.trim() || null,
-    report.notes?.trim() || null,
+    orNull(report.location),
+    orNull(report.notes),
+    orNull(report.color),
+    orNull(report.year),
+    orNull(report.make),
+    orNull(report.model),
     report.photos[0] ?? null,
     report.photos[1] ?? null,
     report.reportedBy,
@@ -408,6 +424,21 @@ export const PLATES_CSS = `
     .plate-del:hover { color: var(--repeat); }
 `;
 
+/**
+ * "Grey 2019 Mazda 3" from whichever of the four fields were filled in.
+ *
+ * They are shown as one phrase rather than four columns because that is how a
+ * car is described out loud, and because most reports will have two of them.
+ */
+export function describeCar(r: {
+  color: string | null;
+  year: string | null;
+  make: string | null;
+  model: string | null;
+}): string {
+  return [r.color, r.year, r.make, r.model].map((v) => v?.trim()).filter(Boolean).join(" ");
+}
+
 /** One row, and the whole reason for the colour. */
 function renderRow(r: PlateRow): string {
   // Allowed beats repeat: a tenant's own car parked in the drive ten times is
@@ -430,6 +461,7 @@ function renderRow(r: PlateRow): string {
     `<td>${escapeHtml(niceDate(r.reported_on))}</td>` +
     `<td class="plate">${escapeHtml(r.plate_typed)}${badge}</td>` +
     `<td>${escapeHtml(r.state)}${states}</td>` +
+    `<td>${escapeHtml(describeCar(r))}</td>` +
     `<td>${escapeHtml(r.location ?? "")}</td>` +
     `<td class="plate-note">${escapeHtml(r.notes ?? "")}</td>` +
     `<td class="plate-photos">${photos
@@ -484,6 +516,18 @@ export function renderPlatesBody(rows: PlateRow[], error?: string, notice?: stri
         ).join("")}
       </select>
     </label>
+    <label>Colour
+      <input name="color" maxlength="30" placeholder="Grey" />
+    </label>
+    <label>Year
+      <input name="year" maxlength="4" inputmode="numeric" pattern="[0-9]{4}" placeholder="2019" />
+    </label>
+    <label>Make
+      <input name="make" maxlength="40" placeholder="Mazda" />
+    </label>
+    <label>Model
+      <input name="model" maxlength="40" placeholder="3" />
+    </label>
     <label>Where
       <input name="location" maxlength="120" value="${escapeHtml(defaults.location)}"
              placeholder="Which property, or where on it" />
@@ -503,7 +547,7 @@ export function renderPlatesBody(rows: PlateRow[], error?: string, notice?: stri
     rows.length
       ? `<table class="plates-table">
           <thead><tr>
-            <th>Date</th><th>Plate</th><th>State</th><th>Where</th>
+            <th>Date</th><th>Plate</th><th>State</th><th>Car</th><th>Where</th>
             <th>Notes</th><th>Photos</th><th>Logged by</th><th></th>
           </tr></thead>
           <tbody>${rows.map(renderRow).join("")}</tbody>
