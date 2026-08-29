@@ -652,6 +652,53 @@ office mailbox alone, and the miss is logged and shown by `calendar status`.
 Tours already on the sheet were never "added" while this was running, so
 nothing queued them; `backfill` is how they get booked.
 
+## Driveway plates
+
+Cars parked in the driveway that shouldn't be, at `/plates`. The point of the
+page is the **repeat**: one neighbour blocking the drive once is an accident,
+the same plate four times is a pattern worth acting on.
+
+A report is a plate, a state, and optionally where the car was, a note, and up
+to two photos — the plate itself and a wider shot showing where it sat. The
+date is today's, taken in the property's timezone rather than the server's, and
+is not something anyone types.
+
+### Why the plate is stored twice
+
+`plate` is normalised — upper case, letters and digits only — and indexed.
+`plate_typed` is what the person actually entered. People write the same plate
+differently every time (`7ABC123`, `7abc-123`, `7 ABC 123`), and a repeat that
+doesn't collide is a repeat nobody sees; but what somebody wrote down is
+evidence and shouldn't be quietly rewritten, so both are kept.
+
+Matching is on the plate alone, not plate and state. A plate is only truly
+unique within its state, but two states issuing the same number *and* both
+parking in one driveway is vanishingly unlikely, while somebody guessing the
+state wrong is not. Where a plate has been logged under more than one state,
+the row says so.
+
+### The red
+
+A row is red when its plate has been seen before, and carries `REPEAT · 2 of 3`
+— which sighting this is, and how many there are. The first sighting of a
+repeated plate stays uncoloured but is labelled `first of 3`, so the history
+reads in order. Colour is never the only signal: the badge says the word.
+
+### Photos
+
+Stored under `uploads/plates/` (gitignored — they are pictures of other
+people's cars). The filename is a uuid this app generates plus an extension it
+chose from the type it recognised, so nothing from the browser reaches the
+path. Serving them goes through the sign-in like every other route.
+
+Either all of a report's photos are written or none are: a valid first photo
+alongside a rejected second one used to leave a file on disk that no report
+pointed at, which nothing would ever clean up.
+
+Deleting is soft. A report used to ask somebody to stop parking there shouldn't
+be able to vanish without trace, so the row stays with `deleted_at` set and
+leaves the page.
+
 ## Inspections
 
 The move-in condition checklists are filled in and signed in a **separate app**

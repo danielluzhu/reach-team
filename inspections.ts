@@ -360,7 +360,8 @@ function attachmentUrl(a: Attachment): string | null {
   return `/inspections/uploads/${a.id}.${ext}`;
 }
 
-const PAGE_CSS = `
+/** The shared page chrome. Also used by the plates page. */
+export const PAGE_CSS = `
     :root { --ink: #1a1a1a; --muted: #6b7280; --line: #e5e7eb; --accent: #2563eb; }
     * { box-sizing: border-box; }
     body { margin: 0; background: #f7f8fa; color: var(--ink);

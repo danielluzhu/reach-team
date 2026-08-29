@@ -14,6 +14,15 @@ import {
 } from "./calendar";
 import { db, SHEET_VERSIONS_KEPT } from "./db";
 import {
+  MAX_PHOTOS,
+  addReport,
+  deleteReport,
+  renderPlatesPage,
+  savePhotos,
+  servePlatePhoto,
+  STATES,
+} from "./plates";
+import {
   addInspectionNote,
   deleteInspectionNote,
   renderInspection,
@@ -53,6 +62,7 @@ const LEADING_NAV_LINKS: [string, string][] = [["/", "Tenants, Access & Homes"]]
  */
 const TRAILING_NAV_LINKS: [string, string][] = [
   ["/inspections", "Inspections"],
+  ["/plates", "Driveway Plates"],
   ["/workflow", "Prospect Workflow"],
 ];
 
@@ -1375,6 +1385,14 @@ const saveSheets = db.transaction((sheets: any[], savedBy: string) => {
   return { stale: [], revs: saved };
 });
 
+/** Re-renders the plates page with a message, keeping the user on the form. */
+function platesError(user: User, message: string): Response {
+  return new Response(renderPlatesPage(renderNav("/plates", user), NAV_CSS, message), {
+    status: 400,
+    headers: HTML_HEADERS,
+  });
+}
+
 /** The Tours & Prospects sheet, the only one that books anything. */
 const TOURS_SHEET_ID = "tours";
 
@@ -1769,6 +1787,55 @@ const server = Bun.serve({
           columns.map((c) => `${c.field}:${c.width}`).join(" ")
       );
       return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname === "/plates") {
+      if (req.method === "GET") {
+        return new Response(renderPlatesPage(renderNav("/plates", user), NAV_CSS), {
+          headers: HTML_HEADERS,
+        });
+      }
+      if (req.method === "POST") {
+        const form = await req.formData();
+        const plate = String(form.get("plate") ?? "").trim();
+        const state = String(form.get("state") ?? "").trim();
+        if (!plate) return platesError(user, "A plate number is needed.");
+        if (!STATES.includes(state)) return platesError(user, "Pick a state.");
+
+        // At most two, and the extras are refused rather than silently dropped,
+        // so nobody believes a photo was kept when it wasn't.
+        const files = form.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+        if (files.length > MAX_PHOTOS) {
+          return platesError(user, `Up to ${MAX_PHOTOS} photos — you attached ${files.length}.`);
+        }
+        const saved = await savePhotos(files);
+        if (saved.error) return platesError(user, saved.error);
+        const photos = saved.ids!;
+
+        addReport({
+          plate,
+          state,
+          location: String(form.get("location") ?? ""),
+          notes: String(form.get("notes") ?? ""),
+          photos,
+          reportedBy: displayName(user),
+        });
+        console.log(
+          `[${new Date().toISOString()}] plate logged by ${user.username}: ${plate} (${state})` +
+            (photos.length ? `, ${photos.length} photo(s)` : "")
+        );
+        // Redirect after post, so a refresh doesn't log the same car twice.
+        return new Response(null, { status: 303, headers: { Location: "/plates" } });
+      }
+      return new Response("Method not allowed", { status: 405 });
+    }
+    if (url.pathname.startsWith("/plates/photo/")) {
+      return await servePlatePhoto(url.pathname.slice("/plates/photo/".length));
+    }
+    const plateDelete = url.pathname.match(/^\/plates\/(\d+)\/delete$/);
+    if (plateDelete) {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      deleteReport(Number(plateDelete[1]), user.username);
+      return new Response(null, { status: 303, headers: { Location: "/plates" } });
     }
     if (url.pathname === "/api/sheets") {
       if (req.method === "GET") {

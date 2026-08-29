@@ -1,0 +1,416 @@
+import { randomUUID } from "node:crypto";
+import { FAVICON_LINK } from "./auth";
+import { db } from "./db";
+import { PAGE_CSS } from "./inspections";
+
+/**
+ * The driveway log: cars parked where they shouldn't be.
+ *
+ * This is a small table with one job, which is spotting the same car twice.
+ * Everything here follows from that — the normalised plate, the index on it,
+ * and a page that shows the repeats in red rather than making somebody read
+ * a hundred rows looking for a number they half remember.
+ */
+
+export const PLATE_UPLOAD_DIR = process.env.PLATE_UPLOAD_DIR ?? "uploads/plates";
+
+/** Two photos: the plate itself, and a wider shot showing where the car was. */
+export const MAX_PHOTOS = 2;
+export const MAX_PHOTO_BYTES = 12 * 1024 * 1024;
+
+/** What a phone camera produces, and nothing else. */
+const PHOTO_TYPES: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "image/webp": "webp",
+};
+
+export const acceptedPhotoTypes = () => Object.keys(PHOTO_TYPES);
+
+/**
+ * The plate as it is matched on: upper case, letters and digits only.
+ *
+ * People write the same plate differently every time — "7ABC123", "7abc-123",
+ * "7 ABC 123" — and a repeat that doesn't collide is a repeat nobody sees. The
+ * form they typed is stored separately and is what gets shown.
+ */
+export function normalizePlate(raw: string): string {
+  return raw.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/** US states, plus the honest option for a plate nobody got a good look at. */
+export const STATES = [
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME",
+  "MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA",
+  "RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC","BC","AB","ON","Unknown",
+];
+
+export type PlateReport = {
+  id: number;
+  plate: string;
+  plate_typed: string;
+  state: string;
+  reported_on: string;
+  location: string | null;
+  notes: string | null;
+  photo1: string | null;
+  photo2: string | null;
+  reported_by: string;
+  created_at: string;
+};
+
+/** A report, plus where it sits in that plate's history. */
+export type PlateRow = PlateReport & {
+  /** How many times this plate has been logged in total. */
+  timesSeen: number;
+  /** 1 for the first sighting of this plate, 2 for the next, and so on. */
+  occurrence: number;
+  /** Every state this plate has been reported under — usually one. */
+  states: string[];
+};
+
+const insertReport = db.prepare(
+  `INSERT INTO plate_reports
+     (plate, plate_typed, state, reported_on, location, notes, photo1, photo2, reported_by, created_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+);
+
+const allReports = db.query(
+  `SELECT * FROM plate_reports WHERE deleted_at IS NULL
+   ORDER BY reported_on DESC, id DESC`
+);
+
+const softDelete = db.prepare(
+  `UPDATE plate_reports SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL`
+);
+
+/**
+ * Every report, newest first, each told how many times its plate has been
+ * seen and which sighting it is.
+ *
+ * Counting happens here rather than in SQL because the page needs both the
+ * total and the position, and a window function would be harder to read than
+ * two passes over a table that will never be large.
+ */
+export function listReports(): PlateRow[] {
+  const reports = allReports.all() as PlateReport[];
+
+  const byPlate = new Map<string, PlateReport[]>();
+  for (const r of reports) {
+    const seen = byPlate.get(r.plate) ?? [];
+    seen.push(r);
+    byPlate.set(r.plate, seen);
+  }
+
+  const ordinal = new Map<number, number>();
+  const states = new Map<string, string[]>();
+  for (const [plate, group] of byPlate) {
+    // The list is newest first, so the oldest sighting is the first one.
+    [...group].reverse().forEach((r, i) => ordinal.set(r.id, i + 1));
+    states.set(plate, [...new Set(group.map((r) => r.state))]);
+  }
+
+  return reports.map((r) => ({
+    ...r,
+    timesSeen: byPlate.get(r.plate)!.length,
+    occurrence: ordinal.get(r.id)!,
+    states: states.get(r.plate)!,
+  }));
+}
+
+/** Today where the cars are, not where the server is. */
+export function today(timeZone = "America/Los_Angeles"): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+export type SavedPhoto = { id: string; ext: string };
+
+/**
+ * Writes one uploaded photo and returns the id to store, or an error to show.
+ *
+ * The filename never comes from the browser: the id is generated here and the
+ * extension is chosen from the type this app recognised, so nothing a caller
+ * sends can reach outside the upload directory.
+ */
+function photoProblem(file: File): string | null {
+  if (!PHOTO_TYPES[file.type.split(";")[0]!.trim().toLowerCase()]) {
+    return `${file.name || "That file"} isn't a photo this app can store`;
+  }
+  if (file.size > MAX_PHOTO_BYTES) {
+    return `${file.name || "That photo"} is over ${MAX_PHOTO_BYTES / 1024 / 1024}MB`;
+  }
+  return null;
+}
+
+/**
+ * Writes the photos for one report, or writes none of them.
+ *
+ * Every file is checked before any is written: a good first photo and a bad
+ * second one used to leave the first on disk with no report pointing at it,
+ * which is a file nobody can see and nobody deletes.
+ */
+export async function savePhotos(files: File[]): Promise<{ ids?: string[]; error?: string }> {
+  for (const file of files) {
+    const problem = photoProblem(file);
+    if (problem) return { error: problem };
+  }
+  const ids: string[] = [];
+  for (const file of files) {
+    const ext = PHOTO_TYPES[file.type.split(";")[0]!.trim().toLowerCase()]!;
+    const id = `${randomUUID()}.${ext}`;
+    await Bun.write(`${PLATE_UPLOAD_DIR}/${id}`, file);
+    ids.push(id);
+  }
+  return { ids };
+}
+
+export type NewReport = {
+  plate: string;
+  state: string;
+  location?: string;
+  notes?: string;
+  photos: string[];
+  reportedBy: string;
+};
+
+export function addReport(report: NewReport): number {
+  const normalized = normalizePlate(report.plate);
+  const info = insertReport.run(
+    normalized,
+    report.plate.trim(),
+    report.state,
+    today(),
+    report.location?.trim() || null,
+    report.notes?.trim() || null,
+    report.photos[0] ?? null,
+    report.photos[1] ?? null,
+    report.reportedBy,
+    new Date().toISOString()
+  );
+  return Number(info.lastInsertRowid);
+}
+
+export function deleteReport(id: number, by: string): boolean {
+  return softDelete.run(new Date().toISOString(), by, id).changes > 0;
+}
+
+/**
+ * Serves a stored photo. The name is checked against the shape this app
+ * generates rather than trusted, so a crafted path can't escape the directory.
+ */
+export async function servePlatePhoto(name: string): Promise<Response> {
+  if (!/^[0-9a-f-]{36}\.(jpg|png|heic|heif|webp)$/.test(name)) {
+    return new Response("Not found", { status: 404 });
+  }
+  const file = Bun.file(`${PLATE_UPLOAD_DIR}/${name}`);
+  if (!(await file.exists())) return new Response("Not found", { status: 404 });
+  return new Response(file, {
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "Cache-Control": "no-store, private",
+    },
+  });
+}
+
+const escapeHtml = (value: unknown): string =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+/** "2026-08-29" → "Fri 29 Aug", which is how a log is skimmed. */
+function niceDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "short", day: "numeric", month: "short", timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+export const PLATES_CSS = `
+    /* Red is the whole message of this page, so it is named once here. */
+    :root { --repeat: #b91c1c; --repeat-bg: #fef2f2; }
+    .plates-intro { color: var(--muted); margin: 0 0 18px; max-width: 70ch; }
+    .plate-form {
+      display: grid; gap: 12px; padding: 16px; margin-bottom: 24px;
+      border: 1px solid var(--line); border-radius: 10px; background: #fff;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      align-items: end;
+    }
+    .plate-form label { display: grid; gap: 5px; font-size: 13px; color: var(--muted); }
+    .plate-form input, .plate-form select {
+      font: inherit; padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 7px; background: #fff; color: var(--ink);
+    }
+    /* A plate is read back character by character, so it is set in a face where
+       nothing is ambiguous, and typed in upper case whatever the caps lock says. */
+    .plate-form input[name="plate"], td.plate {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .plate-form .wide { grid-column: 1 / -1; }
+    .plate-form .photos { display: grid; gap: 5px; }
+    .plate-form button {
+      font: inherit; padding: 9px 18px; border: 0; border-radius: 7px;
+      background: var(--accent); color: #fff; cursor: pointer;
+    }
+    .plate-hint { font-size: 12px; color: var(--muted); }
+    .plates-table { width: 100%; border-collapse: collapse; }
+    .plates-table th, .plates-table td {
+      padding: 9px 10px; border-bottom: 1px solid var(--line);
+      text-align: left; vertical-align: top; font-size: 14px;
+    }
+    .plates-table th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    td.plate { font-weight: 600; white-space: nowrap; }
+    /* A repeat is the whole point of the page, so it is coloured, outlined and
+       labelled — not colour alone, which some readers cannot use. */
+    tr.repeat td { background: var(--repeat-bg); }
+    tr.repeat td.plate { box-shadow: inset 3px 0 0 var(--repeat); color: var(--repeat); }
+    .repeat-badge {
+      display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; background: var(--repeat); color: #fff;
+      letter-spacing: 0; text-transform: none; font-family: system-ui, sans-serif;
+    }
+    .first-badge {
+      display: inline-block; margin-left: 7px; font-size: 11px; color: var(--muted);
+      letter-spacing: 0; text-transform: none; font-family: system-ui, sans-serif;
+    }
+    .plate-photos { display: flex; gap: 6px; }
+    .plate-photos a { line-height: 0; }
+    .plate-photos img {
+      width: 62px; height: 46px; object-fit: cover;
+      border-radius: 5px; border: 1px solid var(--line);
+    }
+    .plates-empty { color: var(--muted); padding: 28px 0; }
+    .plate-error {
+      padding: 10px 14px; margin-bottom: 16px; border-radius: 8px;
+      background: var(--repeat-bg); color: var(--repeat); border: 1px solid var(--repeat);
+    }
+    .plate-note { white-space: pre-wrap; }
+    .plate-del { background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0; }
+    .plate-del:hover { color: var(--repeat); }
+`;
+
+/** One row, and the whole reason for the colour. */
+function renderRow(r: PlateRow): string {
+  const isRepeat = r.occurrence > 1;
+  const photos = [r.photo1, r.photo2].filter(Boolean) as string[];
+  const badge = isRepeat
+    ? `<span class="repeat-badge" title="This plate has been logged ${r.timesSeen} times">` +
+      `REPEAT · ${r.occurrence} of ${r.timesSeen}</span>`
+    : r.timesSeen > 1
+      ? `<span class="first-badge">first of ${r.timesSeen}</span>`
+      : "";
+  const states = r.states.length > 1 ? ` <span class="first-badge">also ${
+    escapeHtml(r.states.filter((s) => s !== r.state).join(", "))}</span>` : "";
+  return (
+    `<tr class="${isRepeat ? "repeat" : ""}">` +
+    `<td>${escapeHtml(niceDate(r.reported_on))}</td>` +
+    `<td class="plate">${escapeHtml(r.plate_typed)}${badge}</td>` +
+    `<td>${escapeHtml(r.state)}${states}</td>` +
+    `<td>${escapeHtml(r.location ?? "")}</td>` +
+    `<td class="plate-note">${escapeHtml(r.notes ?? "")}</td>` +
+    `<td class="plate-photos">${photos
+      .map(
+        (p) =>
+          `<a href="/plates/photo/${escapeHtml(p)}" target="_blank" rel="noopener">` +
+          `<img src="/plates/photo/${escapeHtml(p)}" alt="Photo of ${escapeHtml(r.plate_typed)}" loading="lazy" /></a>`
+      )
+      .join("")}</td>` +
+    `<td>${escapeHtml(r.reported_by)}</td>` +
+    `<td><form method="POST" action="/plates/${r.id}/delete" ` +
+    `onsubmit="return confirm('Remove this report? It stays in the record but leaves the list.')">` +
+    `<button class="plate-del" type="submit" title="Remove">×</button></form></td>` +
+    `</tr>`
+  );
+}
+
+/**
+ * The page body. The form sits above the log because the common visit is
+ * someone standing in the driveway with a phone, adding one.
+ */
+export function renderPlatesBody(rows: PlateRow[], error?: string): string {
+  const repeats = new Set(rows.filter((r) => r.timesSeen > 1).map((r) => r.plate));
+  const summary = rows.length
+    ? `${rows.length} report${rows.length === 1 ? "" : "s"}` +
+      (repeats.size ? ` · ${repeats.size} plate${repeats.size === 1 ? "" : "s"} seen more than once` : "")
+    : "";
+
+  return `
+  <h1>Driveway plates</h1>
+  <p class="plates-intro">Cars parked in the driveway that shouldn't be. Log the plate and
+  it dates itself. A plate that turns up again is marked
+  <span class="repeat-badge">REPEAT</span> in red, so a one-off and a habit don't look alike.
+  ${escapeHtml(summary)}</p>
+
+  ${error ? `<p class="plate-error">${escapeHtml(error)}</p>` : ""}
+
+  <form class="plate-form" method="POST" action="/plates" enctype="multipart/form-data">
+    <label>Plate number
+      <input name="plate" required maxlength="12" autocomplete="off" autocapitalize="characters"
+             spellcheck="false" placeholder="7ABC123" />
+    </label>
+    <label>State
+      <select name="state" required>
+        ${STATES.map(
+          (s) => `<option value="${s}"${s === "WA" ? " selected" : ""}>${s}</option>`
+        ).join("")}
+      </select>
+    </label>
+    <label>Where
+      <input name="location" maxlength="120" placeholder="Blocking the garage" />
+    </label>
+    <label class="photos">Photos (up to ${MAX_PHOTOS})
+      <input type="file" name="photos" accept="image/*" capture="environment" multiple />
+      <span class="plate-hint">Plate and a wider shot. Dated today automatically.</span>
+    </label>
+    <label class="wide">Notes
+      <input name="notes" maxlength="400" placeholder="Silver sedan, left for two hours" />
+    </label>
+    <div><button type="submit">Log it</button></div>
+  </form>
+
+  ${
+    rows.length
+      ? `<table class="plates-table">
+          <thead><tr>
+            <th>Date</th><th>Plate</th><th>State</th><th>Where</th>
+            <th>Notes</th><th>Photos</th><th>Logged by</th><th></th>
+          </tr></thead>
+          <tbody>${rows.map(renderRow).join("")}</tbody>
+        </table>`
+      : `<p class="plates-empty">Nothing logged yet. The first car goes in above.</p>`
+  }`;
+}
+
+/** The whole page, in the same shell every other page here uses. */
+export function renderPlatesPage(nav: string, navCss: string, error?: string): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Driveway plates</title>
+  ${FAVICON_LINK}
+  <style>
+${navCss}
+${PAGE_CSS}
+${PLATES_CSS}
+  </style>
+</head>
+<body>
+  ${nav}
+  <div class="page">
+${renderPlatesBody(listReports(), error)}
+  </div>
+</body>
+</html>`;
+}

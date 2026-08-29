@@ -174,3 +174,38 @@ db.run(`
   )`);
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_tour_events_state ON tour_events(state, attempts)`);
+
+/**
+ * Cars found parked in the driveway that shouldn't be there.
+ *
+ * The point of the table is the repeat: one neighbour blocking the drive once
+ * is an accident, the same plate four times is a pattern worth acting on. So
+ * `plate` holds a normalised form — upper case, letters and digits only — and
+ * is indexed, because "7ABC123", "7abc-123" and "7 ABC 123" are one car and
+ * have to collide. `plate_typed` keeps what the person actually entered, since
+ * that is evidence and shouldn't be quietly rewritten.
+ *
+ * Photos are optional and there are at most two: a plate and a wider shot
+ * showing where the car was. They are stored as files, with only the id here.
+ *
+ * Deleting is soft. A report that has been used to ask somebody to stop
+ * parking there shouldn't be able to vanish without trace.
+ */
+db.run(`
+  CREATE TABLE IF NOT EXISTS plate_reports (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    plate        TEXT NOT NULL,
+    plate_typed  TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    reported_on  TEXT NOT NULL,
+    location     TEXT,
+    notes        TEXT,
+    photo1       TEXT,
+    photo2       TEXT,
+    reported_by  TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    deleted_at   TEXT,
+    deleted_by   TEXT
+  )`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_plate_reports_plate ON plate_reports(plate, reported_on)`);
