@@ -209,3 +209,31 @@ db.run(`
   )`);
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_plate_reports_plate ON plate_reports(plate, reported_on)`);
+
+/**
+ * Cars that are allowed in the driveway: tenants, a vendor who visits weekly,
+ * somebody's own car.
+ *
+ * Without this the log fills up with the same handful of legitimate plates and
+ * the red stops meaning anything — which is the only thing the plate page is
+ * for. `plate` is normalised the same way `plate_reports.plate` is, so the two
+ * join on a plate however it was typed.
+ *
+ * `label` is whose car it is, and is the reason this table is worth having
+ * over a mental list: six months on, "Unit 3, blue Civic" is what tells you
+ * whether the exception still applies.
+ */
+db.run(`
+  CREATE TABLE IF NOT EXISTS plate_whitelist (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    plate        TEXT NOT NULL,
+    plate_typed  TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    label        TEXT NOT NULL,
+    added_by     TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    removed_at   TEXT,
+    removed_by   TEXT
+  )`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_plate_whitelist ON plate_whitelist(plate)`);

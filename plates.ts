@@ -97,6 +97,53 @@ export type PlateReport = {
   created_at: string;
 };
 
+export type AllowedCar = {
+  id: number;
+  plate: string;
+  plate_typed: string;
+  state: string;
+  label: string;
+  added_by: string;
+  created_at: string;
+};
+
+const allowedQuery = db.query(
+  `SELECT * FROM plate_whitelist WHERE removed_at IS NULL ORDER BY label COLLATE NOCASE, id`
+);
+const insertAllowed = db.prepare(
+  `INSERT INTO plate_whitelist (plate, plate_typed, state, label, added_by, created_at)
+   VALUES (?, ?, ?, ?, ?, ?)`
+);
+const removeAllowed = db.prepare(
+  `UPDATE plate_whitelist SET removed_at = ?, removed_by = ? WHERE id = ? AND removed_at IS NULL`
+);
+
+export function listAllowed(): AllowedCar[] {
+  return allowedQuery.all() as AllowedCar[];
+}
+
+/** The allowed car for a plate, however that plate was typed, or null. */
+export function allowedFor(rawPlate: string): AllowedCar | null {
+  const normalized = normalizePlate(rawPlate);
+  return listAllowed().find((a) => a.plate === normalized) ?? null;
+}
+
+export function allowCar(plate: string, state: string, label: string, by: string): AllowedCar {
+  insertAllowed.run(
+    normalizePlate(plate),
+    plate.trim(),
+    state,
+    label.trim(),
+    by,
+    new Date().toISOString()
+  );
+  return allowedFor(plate)!;
+}
+
+export function disallowCar(id: number, by: string): boolean {
+  return removeAllowed.run(new Date().toISOString(), by, id).changes > 0;
+}
+
 /** A report, plus where it sits in that plate's history. */
 export type PlateRow = PlateReport & {
   /** How many times this plate has been logged in total. */
@@ -105,6 +152,8 @@ export type PlateRow = PlateReport & {
   occurrence: number;
   /** Every state this plate has been reported under — usually one. */
   states: string[];
+  /** Set when this plate is on the allowed list: whose car it is. */
+  allowed: AllowedCar | null;
 };
 
 const insertReport = db.prepare(
@@ -148,11 +197,16 @@ export function listReports(): PlateRow[] {
     states.set(plate, [...new Set(group.map((r) => r.state))]);
   }
 
+  // An allowed car is not a violation, however many times it appears, so it is
+  // never counted as a repeat — that is the whole point of the list.
+  const allowed = new Map(listAllowed().map((a) => [a.plate, a]));
+
   return reports.map((r) => ({
     ...r,
     timesSeen: byPlate.get(r.plate)!.length,
     occurrence: ordinal.get(r.id)!,
     states: states.get(r.plate)!,
+    allowed: allowed.get(r.plate) ?? null,
   }));
 }
 
@@ -273,7 +327,7 @@ function niceDate(iso: string): string {
 
 export const PLATES_CSS = `
     /* Red is the whole message of this page, so it is named once here. */
-    :root { --repeat: #b91c1c; --repeat-bg: #fef2f2; }
+    :root { --repeat: #b91c1c; --repeat-bg: #fef2f2; --ok: #15803d; --ok-bg: #f0fdf4; }
     .plates-intro { color: var(--muted); margin: 0 0 18px; max-width: 70ch; }
     .plate-form {
       display: grid; gap: 12px; padding: 16px; margin-bottom: 24px;
@@ -325,7 +379,26 @@ export const PLATES_CSS = `
       width: 62px; height: 46px; object-fit: cover;
       border-radius: 5px; border: 1px solid var(--line);
     }
+    /* An allowed car is not a violation, so it reads as settled, not as an
+       alarm — and it is labelled, because green and red alone are the one pair
+       a colour-blind reader is least able to separate. */
+    tr.allowed td { background: var(--ok-bg); }
+    tr.allowed td.plate { box-shadow: inset 3px 0 0 var(--ok); color: var(--ok); }
+    .ok-badge {
+      display: inline-block; margin-left: 7px; padding: 1px 7px; border-radius: 999px;
+      font-size: 11px; font-weight: 700; background: var(--ok); color: #fff;
+      letter-spacing: 0; text-transform: none; font-family: system-ui, sans-serif;
+    }
+    .plates-section { margin-top: 40px; }
+    .plates-section h2 { font-size: 1.15rem; margin: 0 0 6px; }
+    .plates-section p { color: var(--muted); margin: 0 0 14px; max-width: 70ch; font-size: 0.9rem; }
+    .allow-form { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+    .allowed-table { width: auto; min-width: min(100%, 620px); }
     .plates-empty { color: var(--muted); padding: 28px 0; }
+    .plate-notice {
+      padding: 10px 14px; margin-bottom: 16px; border-radius: 8px;
+      background: var(--ok-bg); color: var(--ok); border: 1px solid var(--ok);
+    }
     .plate-error {
       padding: 10px 14px; margin-bottom: 16px; border-radius: 8px;
       background: var(--repeat-bg); color: var(--repeat); border: 1px solid var(--repeat);
@@ -337,18 +410,23 @@ export const PLATES_CSS = `
 
 /** One row, and the whole reason for the colour. */
 function renderRow(r: PlateRow): string {
-  const isRepeat = r.occurrence > 1;
+  // Allowed beats repeat: a tenant's own car parked in the drive ten times is
+  // not ten violations, and colouring it red would train people to ignore red.
+  const isRepeat = !r.allowed && r.occurrence > 1;
   const photos = [r.photo1, r.photo2].filter(Boolean) as string[];
-  const badge = isRepeat
-    ? `<span class="repeat-badge" title="This plate has been logged ${r.timesSeen} times">` +
-      `REPEAT · ${r.occurrence} of ${r.timesSeen}</span>`
-    : r.timesSeen > 1
-      ? `<span class="first-badge">first of ${r.timesSeen}</span>`
-      : "";
+  const badge = r.allowed
+    ? `<span class="ok-badge" title="On the allowed list">ALLOWED</span>` +
+      `<span class="first-badge">${escapeHtml(r.allowed.label)}</span>`
+    : isRepeat
+      ? `<span class="repeat-badge" title="This plate has been logged ${r.timesSeen} times">` +
+        `REPEAT · ${r.occurrence} of ${r.timesSeen}</span>`
+      : r.timesSeen > 1
+        ? `<span class="first-badge">first of ${r.timesSeen}</span>`
+        : "";
   const states = r.states.length > 1 ? ` <span class="first-badge">also ${
     escapeHtml(r.states.filter((s) => s !== r.state).join(", "))}</span>` : "";
   return (
-    `<tr class="${isRepeat ? "repeat" : ""}">` +
+    `<tr class="${r.allowed ? "allowed" : isRepeat ? "repeat" : ""}">` +
     `<td>${escapeHtml(niceDate(r.reported_on))}</td>` +
     `<td class="plate">${escapeHtml(r.plate_typed)}${badge}</td>` +
     `<td>${escapeHtml(r.state)}${states}</td>` +
@@ -373,9 +451,12 @@ function renderRow(r: PlateRow): string {
  * The page body. The form sits above the log because the common visit is
  * someone standing in the driveway with a phone, adding one.
  */
-export function renderPlatesBody(rows: PlateRow[], error?: string): string {
+export function renderPlatesBody(rows: PlateRow[], error?: string, notice?: string): string {
   const defaults = plateDefaults();
-  const repeats = new Set(rows.filter((r) => r.timesSeen > 1).map((r) => r.plate));
+  const allowed = listAllowed();
+  const repeats = new Set(
+    rows.filter((r) => !r.allowed && r.timesSeen > 1).map((r) => r.plate)
+  );
   const summary = rows.length
     ? `${rows.length} report${rows.length === 1 ? "" : "s"}` +
       (repeats.size ? ` · ${repeats.size} plate${repeats.size === 1 ? "" : "s"} seen more than once` : "")
@@ -389,6 +470,7 @@ export function renderPlatesBody(rows: PlateRow[], error?: string): string {
   ${escapeHtml(summary)}</p>
 
   ${error ? `<p class="plate-error">${escapeHtml(error)}</p>` : ""}
+  ${notice ? `<p class="plate-notice">${escapeHtml(notice)}</p>` : ""}
 
   <form class="plate-form" method="POST" action="/plates" enctype="multipart/form-data">
     <label>Plate number
@@ -427,11 +509,66 @@ export function renderPlatesBody(rows: PlateRow[], error?: string): string {
           <tbody>${rows.map(renderRow).join("")}</tbody>
         </table>`
       : `<p class="plates-empty">Nothing logged yet. The first car goes in above.</p>`
-  }`;
+  }
+
+  <section class="plates-section">
+    <h2>Allowed cars</h2>
+    <p>Cars that belong here — tenants, a vendor who visits, your own. Logging one
+    is refused with a note saying whose it is, and if one is already in the log it
+    reads <span class="ok-badge">ALLOWED</span> instead of counting as a repeat.
+    Without this the same legitimate plates fill the log and the red stops meaning
+    anything.</p>
+
+    <form class="plate-form allow-form" method="POST" action="/plates/allowed">
+      <label>Plate number
+        <input name="plate" required maxlength="12" autocomplete="off"
+               autocapitalize="characters" spellcheck="false" placeholder="7ABC123" />
+      </label>
+      <label>State
+        <select name="state" required>
+          ${STATES.map(
+            (s) => `<option value="${s}"${s === defaults.state ? " selected" : ""}>${s}</option>`
+          ).join("")}
+        </select>
+      </label>
+      <label>Whose car
+        <input name="label" required maxlength="80" placeholder="Unit 3 — blue Civic" />
+      </label>
+      <div><button type="submit">Allow it</button></div>
+    </form>
+
+    ${
+      allowed.length
+        ? `<table class="plates-table allowed-table">
+            <thead><tr><th>Plate</th><th>State</th><th>Whose car</th><th>Added by</th><th></th></tr></thead>
+            <tbody>${allowed
+              .map(
+                (a) =>
+                  `<tr class="allowed">` +
+                  `<td class="plate">${escapeHtml(a.plate_typed)}</td>` +
+                  `<td>${escapeHtml(a.state)}</td>` +
+                  `<td>${escapeHtml(a.label)}</td>` +
+                  `<td>${escapeHtml(a.added_by)}</td>` +
+                  `<td><form method="POST" action="/plates/allowed/${a.id}/remove" ` +
+                  `onsubmit="return confirm('Stop allowing ${escapeHtml(a.plate_typed)}? ` +
+                  `It will count as a violation from now on.')">` +
+                  `<button class="plate-del" type="submit" title="Remove">×</button></form></td>` +
+                  `</tr>`
+              )
+              .join("")}</tbody>
+          </table>`
+        : `<p class="plates-empty">No allowed cars yet.</p>`
+    }
+  </section>`;
 }
 
 /** The whole page, in the same shell every other page here uses. */
-export function renderPlatesPage(nav: string, navCss: string, error?: string): string {
+export function renderPlatesPage(
+  nav: string,
+  navCss: string,
+  error?: string,
+  notice?: string
+): string {
   return `<!doctype html>
 <html>
 <head>
@@ -448,7 +585,7 @@ ${PLATES_CSS}
 <body>
   ${nav}
   <div class="page">
-${renderPlatesBody(listReports(), error)}
+${renderPlatesBody(listReports(), error, notice)}
   </div>
 </body>
 </html>`;

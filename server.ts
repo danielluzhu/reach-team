@@ -16,6 +16,9 @@ import { db, SHEET_VERSIONS_KEPT } from "./db";
 import {
   MAX_PHOTOS,
   addReport,
+  allowCar,
+  allowedFor,
+  disallowCar,
   deleteReport,
   renderPlatesPage,
   savePhotos,
@@ -1385,10 +1388,14 @@ const saveSheets = db.transaction((sheets: any[], savedBy: string) => {
   return { stale: [], revs: saved };
 });
 
-/** Re-renders the plates page with a message, keeping the user on the form. */
-function platesError(user: User, message: string): Response {
-  return new Response(renderPlatesPage(renderNav("/plates", user), NAV_CSS, message), {
-    status: 400,
+/**
+ * Re-renders the plates page with something to say, keeping the user on the
+ * form. An `error` is something they must fix; a `notice` is the page working
+ * as intended — a car refused because it is on the allowed list.
+ */
+function platesPage(user: User, error?: string, notice?: string): Response {
+  return new Response(renderPlatesPage(renderNav("/plates", user), NAV_CSS, error, notice), {
+    status: error ? 400 : 200,
     headers: HTML_HEADERS,
   });
 }
@@ -1798,17 +1805,30 @@ const server = Bun.serve({
         const form = await req.formData();
         const plate = String(form.get("plate") ?? "").trim();
         const state = String(form.get("state") ?? "").trim();
-        if (!plate) return platesError(user, "A plate number is needed.");
-        if (!STATES.includes(state)) return platesError(user, "Pick a state.");
+        if (!plate) return platesPage(user, "A plate number is needed.");
+        if (!STATES.includes(state)) return platesPage(user, "Pick a state.");
 
         // At most two, and the extras are refused rather than silently dropped,
         // so nobody believes a photo was kept when it wasn't.
+        // The allowed list earns its keep here: told whose car it is, nobody
+        // logs the neighbour who is meant to be there. It is a refusal rather
+        // than a silent drop, so the person knows why nothing appeared.
+        const allowed = allowedFor(plate);
+        if (allowed && form.get("anyway") !== "yes") {
+          return platesPage(
+            user,
+            undefined,
+            `${allowed.plate_typed} is on the allowed list — ${allowed.label}. ` +
+              `Not logged. Remove it from the allowed cars below if that has changed.`
+          );
+        }
+
         const files = form.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
         if (files.length > MAX_PHOTOS) {
-          return platesError(user, `Up to ${MAX_PHOTOS} photos — you attached ${files.length}.`);
+          return platesPage(user, `Up to ${MAX_PHOTOS} photos — you attached ${files.length}.`);
         }
         const saved = await savePhotos(files);
-        if (saved.error) return platesError(user, saved.error);
+        if (saved.error) return platesPage(user, saved.error);
         const photos = saved.ids!;
 
         addReport({
@@ -1827,6 +1847,31 @@ const server = Bun.serve({
         return new Response(null, { status: 303, headers: { Location: "/plates" } });
       }
       return new Response("Method not allowed", { status: 405 });
+    }
+    if (url.pathname === "/plates/allowed") {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      const form = await req.formData();
+      const plate = String(form.get("plate") ?? "").trim();
+      const state = String(form.get("state") ?? "").trim();
+      const label = String(form.get("label") ?? "").trim();
+      if (!plate) return platesPage(user, "A plate number is needed.");
+      if (!STATES.includes(state)) return platesPage(user, "Pick a state.");
+      if (!label) return platesPage(user, "Say whose car it is — that is the point of the list.");
+      const already = allowedFor(plate);
+      if (already) {
+        return platesPage(user, undefined, `${already.plate_typed} is already allowed — ${already.label}.`);
+      }
+      allowCar(plate, state, label, displayName(user));
+      console.log(
+        `[${new Date().toISOString()}] plate allowed by ${user.username}: ${plate} (${state}) — ${label}`
+      );
+      return new Response(null, { status: 303, headers: { Location: "/plates" } });
+    }
+    const allowedRemove = url.pathname.match(/^\/plates\/allowed\/(\d+)\/remove$/);
+    if (allowedRemove) {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      disallowCar(Number(allowedRemove[1]), user.username);
+      return new Response(null, { status: 303, headers: { Location: "/plates" } });
     }
     if (url.pathname.startsWith("/plates/photo/")) {
       return await servePlatePhoto(url.pathname.slice("/plates/photo/".length));

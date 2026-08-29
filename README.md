@@ -693,6 +693,36 @@ A row is red when its plate has been seen before, and carries `REPEAT · 2 of 3`
 repeated plate stays uncoloured but is labelled `first of 3`, so the history
 reads in order. Colour is never the only signal: the badge says the word.
 
+### Allowed cars
+
+Tenants park here. So do vendors, and so might you. Without somewhere to say
+so, the log fills with the same legitimate plates, they accumulate into red
+repeats, and the red stops meaning anything — which is the only thing this page
+is for.
+
+An allowed car carries a **label**: whose car it is. That is the reason the
+list is worth keeping over a mental note, because six months on "Unit 3, blue
+Civic" is what tells you whether the exception still applies.
+
+    bun run plates allowed
+    bun run plates allow 7ABC123 WA "Unit 3 — blue Civic"
+    bun run plates disallow 7ABC123
+
+Logging an allowed car is **refused**, with a message naming whose it is —
+however the plate was typed, since both tables normalise the same way. It is a
+refusal rather than a silent drop so the person knows why nothing appeared.
+An allowed car parked somewhere it genuinely shouldn't be can still be logged
+by sending `anyway=yes`.
+
+The list is a lens over the log, not a stamp on a row. Allowing a plate turns
+every report of it green and stops it counting as a repeat, including reports
+made before it was allowed; removing it turns them red again the moment the
+page reloads. Removal keeps the row, with who removed it.
+
+Allowed reads as settled rather than as an alarm, and says the word ALLOWED —
+green and red alone are the pair a colour-blind reader is least able to
+separate.
+
 ### Photos
 
 Stored under `uploads/plates/` (gitignored — they are pictures of other
