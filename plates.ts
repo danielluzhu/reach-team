@@ -47,6 +47,42 @@ export const STATES = [
   "RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC","BC","AB","ON","Unknown",
 ];
 
+/** Settings key holding what the form starts filled in with. */
+const DEFAULTS_KEY = "plate_defaults";
+
+const readSetting = db.prepare(`SELECT value FROM settings WHERE key = ?`);
+const writeSetting = db.prepare(
+  `INSERT INTO settings (key, value, updated_by) VALUES (?, ?, ?)
+   ON CONFLICT(key) DO UPDATE SET
+     value = excluded.value, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`
+);
+
+export type PlateDefaults = { state: string; location: string; notes: string };
+
+/**
+ * What the form starts filled in with.
+ *
+ * Almost every report is the same driveway and the same complaint, so the
+ * common case should be one field and a button. Which driveway that is belongs
+ * to whoever runs the place, not to this file — it lives in settings, like the
+ * property addresses, and the repository stays free of anybody's street.
+ */
+export function plateDefaults(): PlateDefaults {
+  const row = readSetting.get(DEFAULTS_KEY) as { value: string } | undefined;
+  const stored = row ? (() => { try { return JSON.parse(row.value); } catch { return {}; } })() : {};
+  return {
+    state: typeof stored.state === "string" && STATES.includes(stored.state) ? stored.state : "WA",
+    location: typeof stored.location === "string" ? stored.location : "",
+    notes: typeof stored.notes === "string" ? stored.notes : "",
+  };
+}
+
+export function setPlateDefaults(next: Partial<PlateDefaults>, updatedBy: string): PlateDefaults {
+  const merged = { ...plateDefaults(), ...next };
+  writeSetting.run(DEFAULTS_KEY, JSON.stringify(merged), updatedBy);
+  return merged;
+}
+
 export type PlateReport = {
   id: number;
   plate: string;
@@ -338,6 +374,7 @@ function renderRow(r: PlateRow): string {
  * someone standing in the driveway with a phone, adding one.
  */
 export function renderPlatesBody(rows: PlateRow[], error?: string): string {
+  const defaults = plateDefaults();
   const repeats = new Set(rows.filter((r) => r.timesSeen > 1).map((r) => r.plate));
   const summary = rows.length
     ? `${rows.length} report${rows.length === 1 ? "" : "s"}` +
@@ -361,19 +398,21 @@ export function renderPlatesBody(rows: PlateRow[], error?: string): string {
     <label>State
       <select name="state" required>
         ${STATES.map(
-          (s) => `<option value="${s}"${s === "WA" ? " selected" : ""}>${s}</option>`
+          (s) => `<option value="${s}"${s === defaults.state ? " selected" : ""}>${s}</option>`
         ).join("")}
       </select>
     </label>
     <label>Where
-      <input name="location" maxlength="120" placeholder="Blocking the garage" />
+      <input name="location" maxlength="120" value="${escapeHtml(defaults.location)}"
+             placeholder="Which property, or where on it" />
     </label>
     <label class="photos">Photos (up to ${MAX_PHOTOS})
       <input type="file" name="photos" accept="image/*" capture="environment" multiple />
       <span class="plate-hint">Plate and a wider shot. Dated today automatically.</span>
     </label>
     <label class="wide">Notes
-      <input name="notes" maxlength="400" placeholder="Silver sedan, left for two hours" />
+      <input name="notes" maxlength="400" value="${escapeHtml(defaults.notes)}"
+             placeholder="Silver sedan, left for two hours" />
     </label>
     <div><button type="submit">Log it</button></div>
   </form>

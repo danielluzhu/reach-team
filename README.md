@@ -658,6 +658,15 @@ Cars parked in the driveway that shouldn't be, at `/plates`. The point of the
 page is the **repeat**: one neighbour blocking the drive once is an accident,
 the same plate four times is a pattern worth acting on.
 
+The form starts filled in, because almost every report is the same driveway and
+the same complaint — the common visit should be one field and a button. The
+state, the location and the note it opens with are settings, not source: which
+driveway a company watches is its own business.
+
+    bun run plates defaults
+    bun run plates defaults --state WA --location "12 Example Ave NE" --notes "Blocking garage"
+    bun run plates repeats            # only the plates seen more than once
+
 A report is a plate, a state, and optionally where the car was, a note, and up
 to two photos — the plate itself and a wider shot showing where it sat. The
 date is today's, taken in the property's timezone rather than the server's, and

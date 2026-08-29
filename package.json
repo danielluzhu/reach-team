@@ -5,7 +5,8 @@
     "dev": "bun run --watch server.ts",
     "start": "bun run server.ts",
     "users": "bun run users.ts",
-    "calendar": "bun run calendar-cli.ts"
+    "calendar": "bun run calendar-cli.ts",
+    "plates": "bun run plates-cli.ts"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1"
