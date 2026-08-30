@@ -886,3 +886,60 @@ export async function pollCalendarChanges(): Promise<CalendarChange[]> {
   }
   return changes;
 }
+
+export type AgendaEvent = {
+  id: string;
+  title: string;
+  location?: string;
+  description?: string;
+  allDay?: boolean;
+  start: string;
+  end: string;
+  guests?: string[];
+};
+
+/**
+ * The calendar itself, for a date range.
+ *
+ * This is the only call that lists the calendar rather than asking about ids
+ * the CRM already holds — the calendar page needs everything on it, including
+ * events nobody booked through here.
+ *
+ * Nothing is cached. The page is meant to show what the calendar says at the
+ * moment it is opened, and a cache is exactly the thing that would make it
+ * quietly wrong after somebody moved a tour on their phone.
+ */
+export async function fetchAgenda(
+  from: string,
+  to: string
+): Promise<{ calendar: string; events: AgendaEvent[] }> {
+  if (!calendarConfigured()) throw new Error("not-configured");
+  const res = await fetch(WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      secret: WEBHOOK_SECRET,
+      action: "agenda",
+      from,
+      to,
+      timeZone: TOUR_TIMEZONE,
+    }),
+    signal: AbortSignal.timeout(45_000),
+  });
+  const text = await res.text();
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `non-JSON reply (HTTP ${res.status}) — the deployment may be serving an older ` +
+        `version of the script: ${text.slice(0, 120)}`
+    );
+  }
+  // An older deployment doesn't know this action and falls through to the
+  // booking path, which complains about a missing title. Say what that means
+  // rather than showing somebody "missing title" on a calendar page.
+  if (body.error === "missing title") throw new Error("old-deployment");
+  if (!body.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+  return { calendar: body.calendar ?? "", events: body.events ?? [] };
+}

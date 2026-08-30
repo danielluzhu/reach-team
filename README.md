@@ -652,6 +652,34 @@ office mailbox alone, and the miss is logged and shown by `calendar status`.
 Tours already on the sheet were never "added" while this was running, so
 nothing queued them; `backfill` is how they get booked.
 
+## Calendar
+
+`/calendar` shows what is actually on the office calendar, drawn by this app
+rather than embedded from Google, a month at a time with arrows either side.
+
+### Why it isn't a Google embed
+
+That calendar is private and its event descriptions carry prospect names and
+phone numbers. A Google embed only renders for a viewer already signed into a
+Google account with access to it — everyone else gets Google's error page
+inside the frame — and the way to fix that is to make the calendar public,
+which would publish every tour's details to anyone with the link. Asking the
+Apps Script, which already runs as the calendar's owner, works for anyone
+signed into this app and keeps the calendar shut.
+
+The page shows the whole calendar, not only tours the CRM booked: anything on
+it appears, including things nobody added through here.
+
+### Freshness
+
+It is re-read on every page load, with no cache anywhere. A stale agenda after
+somebody moved a tour on their phone is the one failure this page must not
+have, and the cost is a second or two while Apps Script answers.
+
+It needs the same webhook config as the tour bookings, and a deployment new
+enough to know the `agenda` action. When either is missing the page says which
+one and what to do about it, rather than failing blankly.
+
 ## Driveway plates
 
 Cars parked in the driveway that shouldn't be, at `/plates`. The point of the

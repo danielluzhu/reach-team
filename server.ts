@@ -12,6 +12,7 @@ import {
   flushQueue,
   startCalendarWorker,
 } from "./calendar";
+import { renderAgendaPage } from "./agenda";
 import { db, SHEET_VERSIONS_KEPT } from "./db";
 import {
   MAX_PHOTOS,
@@ -64,6 +65,7 @@ const LEADING_NAV_LINKS: [string, string][] = [["/", "Tenants, Access & Homes"]]
  * rather than something opened daily, so it reads last.
  */
 const TRAILING_NAV_LINKS: [string, string][] = [
+  ["/calendar", "Calendar"],
   ["/inspections", "Inspections"],
   ["/plates", "Driveway Plates"],
   ["/workflow", "Prospect Workflow"],
@@ -1794,6 +1796,13 @@ const server = Bun.serve({
           columns.map((c) => `${c.field}:${c.width}`).join(" ")
       );
       return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname === "/calendar") {
+      if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
+      return new Response(
+        await renderAgendaPage(renderNav("/calendar", user), NAV_CSS, url.searchParams.get("start") ?? undefined),
+        { headers: HTML_HEADERS }
+      );
     }
     if (url.pathname === "/plates") {
       if (req.method === "GET") {

@@ -40,6 +40,43 @@ function doPost(e) {
       return reply({ error: 'unauthorized' });
     }
 
+    // The whole calendar for a date range, for the CRM's calendar page. This
+    // one does list the calendar — that is the point of it — so it returns
+    // only what a page needs to draw and caps how much comes back.
+    if (body.action === 'agenda') {
+      var agendaCal = CalendarApp.getDefaultCalendar();
+      var agendaTz = body.timeZone || 'America/Los_Angeles';
+      var found = agendaCal.getEvents(
+        parseInTz(body.from + ' 00:00:00', agendaTz),
+        parseInTz(body.to + ' 23:59:59', agendaTz)
+      );
+      var agenda = [];
+      for (var a = 0; a < found.length && a < 500; a++) {
+        var item = found[a];
+        var whole = item.isAllDayEvent();
+        var guestEmails = [];
+        var guestList = item.getGuestList();
+        for (var g = 0; g < guestList.length; g++) guestEmails.push(guestList[g].getEmail());
+        agenda.push({
+          id: item.getId(),
+          title: item.getTitle(),
+          location: item.getLocation(),
+          // Long enough to be useful in a popover, short enough that a busy
+          // month doesn't return a megabyte.
+          description: (item.getDescription() || '').slice(0, 600),
+          allDay: whole,
+          start: whole
+            ? Utilities.formatDate(item.getAllDayStartDate(), agendaTz, 'yyyy-MM-dd')
+            : Utilities.formatDate(item.getStartTime(), agendaTz, 'yyyy-MM-dd HH:mm:ss'),
+          end: whole
+            ? Utilities.formatDate(item.getAllDayEndDate(), agendaTz, 'yyyy-MM-dd')
+            : Utilities.formatDate(item.getEndTime(), agendaTz, 'yyyy-MM-dd HH:mm:ss'),
+          guests: guestEmails,
+        });
+      }
+      return reply({ ok: true, calendar: agendaCal.getName(), events: agenda });
+    }
+
     // Reading back what the calendar currently says, so the CRM can pick up
     // an edit a guest made. Ids are asked for explicitly: this never lists
     // the calendar, only the events the CRM itself booked.
