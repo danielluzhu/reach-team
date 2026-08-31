@@ -229,6 +229,7 @@
   <span class="spacer"></span>
   <button id="undo" title="Ctrl+Z">Undo</button>
   <button id="redo" title="Ctrl+Shift+Z">Redo</button>
+  <button id="sort-schedule" hidden>Sort by date &amp; time</button>
   <button id="csv">Download CSV</button>
   <span class="status" id="status">Loading…</span>
 </div>
@@ -968,6 +969,7 @@ function render() {
   $("undo").disabled = !undoStack.length;
   $("redo").disabled = !redoStack.length;
   paintSelection();
+  refreshScheduleButton();
 }
 
 function selRange() {
@@ -1147,6 +1149,64 @@ function sortBy(c, dir) {
   sheet().columns[c].sort = dir;
   afterChange();
 }
+
+/**
+ * The date and time columns to sort a schedule on, or null if this sheet is
+ * not one.
+ *
+ * The first of each type, which on Tours is Date and Time — deliberately not
+ * End Time, since a tour is ordered by when it starts. A sheet with dates but
+ * no times still qualifies: sorting by date alone is a schedule sort, it just
+ * has one key.
+ */
+function schedulePair(cols) {
+  let date = -1, time = -1;
+  cols.forEach((c, i) => {
+    if (!c) return;
+    if (c.type === "date" && date < 0) date = i;
+    else if (c.type === "time" && time < 0) time = i;
+  });
+  return date >= 0 ? { date, time } : null;
+}
+
+/**
+ * Puts the sheet in schedule order: by day, and within a day by start time.
+ *
+ * Two keys rather than clicking two headers, because sorting by Time and then
+ * by Date only works if the first sort is stable and nobody should have to
+ * know that. Rows with no date sink to the bottom whichever way it is pointed —
+ * they are unscheduled, not early, and a blank row belongs out of the way
+ * rather than at the top of a descending sort.
+ */
+function sortSchedule(dir) {
+  const pair = schedulePair(sheet().columns);
+  if (!pair) return;
+  snapshot();
+  const sign = dir === "desc" ? -1 : 1;
+  const dateKey = (row) => parseDateInput(row[pair.date]) ?? "";
+  const timeKey = (row) => (pair.time < 0 ? null : parseTimeInput(row[pair.time]));
+  sheet().rows.sort((a, b) => {
+    const da = dateKey(a), db = dateKey(b);
+    if (!da && !db) return 0;
+    if (!da) return 1;
+    if (!db) return -1;
+    if (da !== db) return da < db ? -sign : sign;
+    // Same day: a row with no time sits after the timed ones, in both
+    // directions — "sometime that day" reads as after everything booked.
+    const ta = timeKey(a), tb = timeKey(b);
+    if (ta === null && tb === null) return 0;
+    if (ta === null) return 1;
+    if (tb === null) return -1;
+    return ta === tb ? 0 : (ta < tb ? -sign : sign);
+  });
+  // The header arrows describe a single-column sort and would now be lying.
+  sheet().columns.forEach((col) => delete col.sort);
+  scheduleDir = dir;
+  afterChange();
+}
+
+/** Which way the schedule button will sort next. */
+let scheduleDir = "asc";
 
 /* ---------------- clipboard ---------------- */
 
@@ -1649,6 +1709,33 @@ applyWrap(wrapPref);
 $("wrap").onchange = (e) => {
   applyWrap(e.target.checked);
   try { localStorage.setItem(WRAP_KEY, e.target.checked ? "1" : "0"); } catch {}
+};
+
+/**
+ * Only sheets with a date column can be put in schedule order, so the button
+ * appears on those and nowhere else rather than sitting there inert. It
+ * alternates direction, and says which way it will go next.
+ */
+function refreshScheduleButton() {
+  const btn = $("sort-schedule");
+  if (!btn) return;
+  const pair = schedulePair(sheet().columns);
+  btn.hidden = !pair;
+  if (!pair) return;
+  const both = pair.time >= 0;
+  btn.textContent = scheduleDir === "asc"
+    ? (both ? "Sort by date & time ↑" : "Sort by date ↑")
+    : (both ? "Sort by date & time ↓" : "Sort by date ↓");
+  btn.title = both
+    ? "Oldest first, and within a day by start time"
+    : "Oldest first";
+  if (scheduleDir === "desc") btn.title = btn.title.replace("Oldest", "Newest");
+}
+
+$("sort-schedule").onclick = () => {
+  sortSchedule(scheduleDir);
+  scheduleDir = scheduleDir === "asc" ? "desc" : "asc";
+  refreshScheduleButton();
 };
 
 $("csv").onclick = () => {

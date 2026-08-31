@@ -541,6 +541,18 @@ people editing different tabs in different browsers means last-writer-wins, and 
 page loaded *before* a tab existed will delete that tab when it next autosaves.
 So: reload `/sheets` after any tab is added, and don't leave it open for days.
 
+**Sort by date & time** puts the sheet in schedule order — by day, and within a
+day by start time — and alternates direction each press. Two keys rather than
+clicking two headers, because sorting by Time and then by Date only works if the
+first sort is stable and nobody should have to know that. It uses the first date
+column and the first time column, so on Tours that is Date and Time and
+deliberately not End Time: a tour is ordered by when it starts.
+
+Rows with no date sink to the bottom whichever way it points — they are
+unscheduled, not early — and within a day a row with no time sits after the
+timed ones, since "sometime that day" reads as after everything booked. The
+button only appears on sheets that have a date column.
+
 A **date column that isn't half of a start/end pair** greys out once the day has
 passed — the Date column on Tours. A term is shaded by where today falls between
 two dates; a column on its own has no span to fall inside, so it gets the simpler
