@@ -51,6 +51,9 @@ const PROPERTIES_KEY = "property_addresses";
 /** Settings key holding the city the properties are in. */
 const CITY_KEY = "property_city";
 
+/** Settings key holding the people who can lead an event. */
+const PEOPLE_KEY = "calendar_people";
+
 const readSetting = db.prepare(`SELECT value FROM settings WHERE key = ?`);
 const writeSetting = db.prepare(
   `INSERT INTO settings (key, value, updated_by) VALUES (?, ?, ?)
@@ -81,6 +84,33 @@ export function guideEmails(): Record<string, string> {
 
 export function setGuideEmails(map: Record<string, string>, updatedBy: string) {
   writeSetting.run(GUIDES_KEY, JSON.stringify(map), updatedBy);
+}
+
+/**
+ * Everyone who can be the lead on an event: tour guides and the contractors
+ * who do the cleaning, flooring and repairs.
+ *
+ * Names, not addresses — a contractor turns up in an event title ("1714
+ * cleaning yuliet") long before anybody has their email. They live in settings
+ * rather than in source because they are real people's names and this
+ * repository is public.
+ */
+export function leadNames(): string[] {
+  const row = readSetting.get(PEOPLE_KEY) as { value: string } | undefined;
+  if (!row) return [];
+  try {
+    const parsed = JSON.parse(row.value);
+    return Array.isArray(parsed) ? parsed.filter((n) => typeof n === "string" && n.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function setLeadNames(names: string[], updatedBy: string) {
+  const unique = [...new Map(names.map((n) => [n.trim().toLowerCase(), n.trim()])).values()].sort(
+    (a, b) => a.localeCompare(b)
+  );
+  writeSetting.run(PEOPLE_KEY, JSON.stringify(unique), updatedBy);
 }
 
 export type TourEvent = {

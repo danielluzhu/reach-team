@@ -4,6 +4,7 @@ import {
   TOUR_TIMEZONE,
   fetchAgenda,
   guideEmails,
+  leadNames,
   type AgendaEvent,
 } from "./calendar";
 import { PAGE_CSS } from "./inspections";
@@ -104,6 +105,10 @@ const AGENDA_CSS = `
       font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px;
       background: #eef2ff; color: #3730a3;
     }
+    /* The lead is the one name that answers "who is doing this", so it is the
+       one that carries weight; anyone else invited sits behind it. */
+    .person.lead { background: var(--accent); color: #fff; }
+    .person.none { background: #fff4e0; color: #a15c00; font-weight: 500; }
     .virtual-tag {
       display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
       font-size: 11px; font-weight: 700; background: #ede9fe; color: #5b21b6;
@@ -167,21 +172,63 @@ export function attendees(guests: string[]): string[] {
   return names;
 }
 
+/** "unassigned" is a placeholder the tour titles use, not a person. */
+const NOT_A_PERSON = /^(unassigned|tbd|n\/a|none|\?+)$/i;
+
+/**
+ * Who is running an event.
+ *
+ * Three sources, in this order, because they disagree and the first is the
+ * most deliberate:
+ *
+ *  1. A tour title says it outright — "2120 Anant <> Harsh & Andrew". This
+ *     has to win: "2120 Andrew <> Harsh" is a prospect called Andrew being
+ *     shown round by Harsh, and reading the title left to right would name
+ *     the wrong person.
+ *  2. A known name anywhere in the title, which is how the work is written:
+ *     "1714 cleaning yuliet", "carlos 4544 clean", "2120 flooring quong".
+ *     Matching against a list rather than guessing at word positions is what
+ *     keeps "4544 301 claire move in" from making a tenant the lead.
+ *  3. Failing both, whoever is invited.
+ */
+export function leadFor(title: string, guests: string[] = []): string[] {
+  const arrow = title.split(/<>/)[1];
+  if (arrow !== undefined) {
+    const named = arrow
+      .split(/&|,|\band\b|\//i)
+      .map((n) => n.trim())
+      .filter((n) => n && !NOT_A_PERSON.test(n));
+    if (named.length) return named;
+  }
+
+  const found = leadNames().filter((name) =>
+    new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(title)
+  );
+  if (found.length) return found;
+
+  return attendees(guests);
+}
+
 function renderEvent(e: AgendaEvent): string {
   const virtual = /\(virtual\)/i.test(e.title);
   const title = escapeHtml(e.title.replace(/\s*\(virtual\)\s*$/i, ""));
-  const who = attendees(e.guests ?? []);
+  const lead = leadFor(e.title, e.guests ?? []);
+  // Anyone invited who is not already named as the lead.
+  const others = attendees(e.guests ?? []).filter(
+    (n) => !lead.some((l) => l.toLowerCase() === n.toLowerCase())
+  );
   return (
     `<div class="slot">` +
     `<div class="when">${e.allDay ? "all day" : escapeHtml(clock(e.start))}</div>` +
     `<div class="what">` +
     `<div class="title">${title}${virtual ? `<span class="virtual-tag">VIRTUAL</span>` : ""}</div>` +
     (e.location ? `<div class="where">${escapeHtml(e.location)}</div>` : "") +
-    (who.length
-      ? `<div class="who">${who
-          .map((n) => `<span class="person">${escapeHtml(n)}</span>`)
-          .join("")}</div>`
-      : "") +
+    (lead.length || others.length
+      ? `<div class="who">` +
+        lead.map((n) => `<span class="person lead">${escapeHtml(n)}</span>`).join("") +
+        others.map((n) => `<span class="person">${escapeHtml(n)}</span>`).join("") +
+        `</div>`
+      : `<div class="who"><span class="person none">no lead</span></div>`) +
     `</div></div>`
   );
 }

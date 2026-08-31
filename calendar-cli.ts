@@ -12,6 +12,9 @@
  *   bun run calendar properties set <street> <full address>
  *   bun run calendar properties rm <street>
  *   bun run calendar city [<name>]                # the city the properties are in
+ *   bun run calendar people                       # who can lead an event
+ *   bun run calendar people add <name...>
+ *   bun run calendar people rm <name>
  *   bun run calendar queue [--all]                # recent events, failures first
  *   bun run calendar retry [<key>|--all]          # put failed rows back
  *   bun run calendar test                         # book a throwaway event now
@@ -31,6 +34,8 @@ import {
   pollCalendarChanges,
   requeueSentEvents,
   guideEmails,
+  leadNames,
+  setLeadNames,
   propertyAddresses,
   propertyCity,
   setGuideEmails,
@@ -224,6 +229,33 @@ switch (cmd) {
     break;
   }
 
+  case "people": {
+    const [sub, ...rest] = args;
+    const people = leadNames();
+    if (!sub || sub === "list") {
+      console.log(people.length ? people.map((n) => `  ${n}`).join("\n") : "Nobody on file.");
+      console.log(
+        "\nGuides also come from `calendar guides`; these are the names matched in " +
+          "event titles, which is how contractors are written."
+      );
+      break;
+    }
+    if (sub === "add") {
+      if (!rest.length) die("usage: calendar people add <name> [<name>…]");
+      setLeadNames([...people, ...rest], "cli");
+      console.log(`now ${leadNames().length} on file: ${leadNames().join(", ")}`);
+      break;
+    }
+    if (sub === "rm") {
+      if (!rest[0]) die("usage: calendar people rm <name>");
+      const gone = rest[0].toLowerCase();
+      setLeadNames(people.filter((n) => n.toLowerCase() !== gone), "cli");
+      console.log(`removed ${rest[0]}`);
+      break;
+    }
+    die(`unknown: people ${sub}`);
+  }
+
   case "queue": {
     const all = args.includes("--all");
     const rows = db
@@ -345,6 +377,9 @@ switch (cmd) {
       "bun run calendar properties set <street> <address>",
       "bun run calendar properties rm <street>",
       "bun run calendar city [<name>]                the city the properties are in",
+      "bun run calendar people                       who can lead an event",
+      "bun run calendar people add <name...>",
+      "bun run calendar people rm <name>",
       "bun run calendar queue [--all]                recent events, failures first",
       "bun run calendar retry <key>|--all            put failed rows back",
       "bun run calendar test                         book a throwaway event now",

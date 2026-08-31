@@ -702,6 +702,33 @@ signed into this app and keeps the calendar shut.
 The page shows the whole calendar, not only tours the CRM booked: anything on
 it appears, including things nobody added through here.
 
+### The lead
+
+Every event says who is running it. Three sources, in order, because they
+disagree and the first is the most deliberate:
+
+1. **A tour title says it outright** — `2120 Anant <> Harsh & Andrew`. This has
+   to win: `2120 Andrew <> Harsh` is a prospect called Andrew being shown round
+   by Harsh, and reading the title left to right would name the wrong person.
+2. **A known name anywhere in the title**, which is how work is written —
+   `1714 cleaning yuliet`, `carlos 4544 clean`, `2120 flooring quong`. Matching
+   against a list rather than guessing at word positions is what stops
+   `4544 301 claire move in` making a tenant the lead.
+3. **Whoever is invited**, failing both.
+
+    bun run calendar people                   who can lead an event
+    bun run calendar people add Carlos Yuliet
+    bun run calendar people rm Carlos
+
+They are names rather than addresses, because a contractor appears in a title
+long before anyone has their email — and they live in settings, not source,
+since they are real people and this repository is public.
+
+An event with no lead says **no lead** rather than showing nothing, since a job
+nobody is named on is worth seeing. Around half of a typical month has one:
+inspections and `Tour for <prospect>` entries name nobody, and that is a gap in
+the calendar rather than something this can infer.
+
 ### Freshness
 
 It is re-read on every page load, with no cache anywhere. A stale agenda after
