@@ -112,6 +112,10 @@ function doPost(e) {
             ? Utilities.formatDate(item.getAllDayEndDate(), agendaTz, 'yyyy-MM-dd')
             : Utilities.formatDate(item.getEndTime(), agendaTz, 'yyyy-MM-dd HH:mm:ss'),
           guests: guestEmails,
+          // Who put it on the calendar. For anything nobody is invited to and
+          // no name appears in — an inspection, say — this is the only record
+          // of whose job it is.
+          creators: item.getCreators(),
         });
       }
       return reply({ ok: true, calendar: agendaCal.getName(), events: agenda });

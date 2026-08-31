@@ -714,7 +714,10 @@ disagree and the first is the most deliberate:
    `1714 cleaning yuliet`, `carlos 4544 clean`, `2120 flooring quong`. Matching
    against a list rather than guessing at word positions is what stops
    `4544 301 claire move in` making a tenant the lead.
-3. **Whoever is invited**, failing both.
+3. **Whoever put the event on the calendar.** An inspection invites nobody and
+   names nobody, so the person who booked it is the only record of whose job it
+   is — and in practice it is theirs.
+4. **Whoever is invited**, failing all of those.
 
     bun run calendar people                   who can lead an event
     bun run calendar people add Carlos Yuliet

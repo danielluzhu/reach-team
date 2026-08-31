@@ -1162,6 +1162,8 @@ export type AgendaEvent = {
   start: string;
   end: string;
   guests?: string[];
+  /** Addresses of whoever created the event. */
+  creators?: string[];
 };
 
 /**

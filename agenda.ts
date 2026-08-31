@@ -199,9 +199,16 @@ const NOT_A_PERSON = /^(unassigned|tbd|n\/a|none|\?+)$/i;
  *     "1714 cleaning yuliet", "carlos 4544 clean", "2120 flooring quong".
  *     Matching against a list rather than guessing at word positions is what
  *     keeps "4544 301 claire move in" from making a tenant the lead.
- *  3. Failing both, whoever is invited.
+ *  3. Whoever put the event on the calendar. An inspection invites nobody and
+ *     names nobody, so the person who booked it is the only record of whose
+ *     job it is — and in practice it is theirs.
+ *  4. Failing all of those, whoever is invited.
  */
-export function leadFor(title: string, guests: string[] = []): string[] {
+export function leadFor(
+  title: string,
+  guests: string[] = [],
+  creators: string[] = []
+): string[] {
   const arrow = title.split(/<>/)[1];
   if (arrow !== undefined) {
     const named = arrow
@@ -216,13 +223,16 @@ export function leadFor(title: string, guests: string[] = []): string[] {
   );
   if (found.length) return found;
 
+  const host = attendees(creators);
+  if (host.length) return host;
+
   return attendees(guests);
 }
 
 function renderEvent(e: AgendaEvent): string {
   const virtual = /\(virtual\)/i.test(e.title);
   const title = escapeHtml(e.title.replace(/\s*\(virtual\)\s*$/i, ""));
-  const lead = leadFor(e.title, e.guests ?? []);
+  const lead = leadFor(e.title, e.guests ?? [], e.creators ?? []);
   // Anyone invited who is not already named as the lead.
   const others = attendees(e.guests ?? []).filter(
     (n) => !lead.some((l) => l.toLowerCase() === n.toLowerCase())
