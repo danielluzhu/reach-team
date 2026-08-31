@@ -260,6 +260,16 @@ let undoStack = [], redoStack = [];
 let dragging = false;
 
 const sheet = () => doc.sheets[si];
+
+/**
+ * Sheets where a new row belongs at the top rather than the bottom.
+ *
+ * Tours is a log read newest-first: the row you are about to type is today's,
+ * and appending it puts it a hundred and fifty rows below the fold. Leases and
+ * Vendors read as lists rather than logs, so they still grow downwards.
+ */
+const ADDS_AT_TOP = new Set(["tours"]);
+const addsAtTop = () => ADDS_AT_TOP.has(sheet().id);
 const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const attr = (s) => esc(s).replace(/"/g, "&quot;");
@@ -1666,8 +1676,9 @@ $("search").addEventListener("keydown", (e) => {
 
 $("add-row").onclick = () => {
   if (query) { query = ""; $("search").value = ""; }  // a blank row would be filtered out
-  insertRow(sheet().rows.length);
-  moveTo(visible.length - 1, 0, false);
+  const top = addsAtTop();
+  insertRow(top ? 0 : sheet().rows.length);
+  moveTo(top ? 0 : visible.length - 1, 0, false);
   wrapEl.focus();
 };
 $("add-col").onclick = () => {

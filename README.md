@@ -541,6 +541,12 @@ people editing different tabs in different browsers means last-writer-wins, and 
 page loaded *before* a tab existed will delete that tab when it next autosaves.
 So: reload `/sheets` after any tab is added, and don't leave it open for days.
 
+**+ Row** adds at the **top** on Tours and at the bottom everywhere else. Tours
+is a log read newest-first: the row about to be typed is today's, and appending
+it puts it a hundred and fifty rows below the fold. Leases and Vendors read as
+lists rather than logs, so they still grow downwards — the set is `ADDS_AT_TOP`
+in `public/sheets.html`.
+
 **Sort by date & time** puts the sheet in schedule order — by day, and within a
 day by start time — and alternates direction each press. Two keys rather than
 clicking two headers, because sorting by Time and then by Date only works if the
