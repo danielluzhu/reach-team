@@ -109,6 +109,10 @@
   td.term-active { background: #d8f0dc; }
   td.term-past   { background: #e8eaed; color: #5f6368; }
   td.term-future { background: #fdf3ce; }
+  /* A lone date column — Tours has one — greys out once the day has passed, so
+     a long sheet reads as "done above, coming up below" at a glance. Lighter
+     than term-past, which shades two cells at once and can afford to be. */
+  td.date-past { background: #f1f3f4; color: #5f6368; }
   td.sel { background: #e8f0fe; }
   td.focus { outline: 2px solid #1a73e8; outline-offset: -2px; background: #fff; z-index: 1; }
   td.editing { overflow: visible; position: relative; padding: 0; }
@@ -453,6 +457,23 @@ function termPair(cols) {
   return start >= 0 && end >= 0 ? { start, end } : null;
 }
 
+/**
+ * Date columns that aren't half of a start/end pair.
+ *
+ * A term is shaded by where today falls between two dates; a column on its own
+ * has no span to fall inside, so it gets the simpler question — has this day
+ * been and gone.
+ */
+function loneDateCols(cols, pair) {
+  const out = [];
+  cols.forEach((c, i) => {
+    if (!c || c.type !== "date") return;
+    if (pair && (i === pair.start || i === pair.end)) return;
+    out.push(i);
+  });
+  return out;
+}
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /* Today where the person reading it is, not UTC — near midnight the two are
@@ -480,16 +501,29 @@ function termClass(row, pair) {
   return "term-active";
 }
 
+/**
+ * Whether a lone date cell is in the past. Today itself is not: the tour at
+ * 4pm has not happened yet, and greying it out at breakfast would be wrong.
+ */
+function isPastDate(value) {
+  const v = String(value ?? "").trim();
+  return ISO_DATE.test(v) && v < todayISO();
+}
+
 /** Re-shades one row's term cells after an edit that didn't redraw the grid. */
 function repaintTerm(vr) {
   const pair = termPair(sheet().columns);
-  if (!pair) return;
-  const cls = termClass(sheet().rows[visible[vr]], pair);
-  for (const c of [pair.start, pair.end]) {
+  const cls = pair ? termClass(sheet().rows[visible[vr]], pair) : "";
+  for (const c of pair ? [pair.start, pair.end] : []) {
     const td = cellAt(vr, c);
     if (!td) continue;
     td.classList.remove(...TERM_CLASSES);
     if (cls) td.classList.add(cls);
+  }
+  for (const c of loneDateCols(sheet().columns, pair)) {
+    const td = cellAt(vr, c);
+    if (!td) continue;
+    td.classList.toggle("date-past", isPastDate(sheet().rows[visible[vr]][c]));
   }
 }
 
@@ -864,6 +898,7 @@ function render() {
 
   const rows = s.rows;
   const pair = termPair(cols);
+  const loneDates = loneDateCols(cols, pair);
   tagMap = tagSlots(cols, rows);
   for (let vr = 0; vr < visible.length; vr++) {
     const r = visible[vr];
@@ -878,6 +913,7 @@ function render() {
       const classes = [];
       if (isAtomic(cols[c])) classes.push("atomic");
       if (term && pair && (c === pair.start || c === pair.end)) classes.push(term);
+      else if (loneDates.includes(c) && isPastDate(raw)) classes.push("date-past");
       const cls = classes.length ? ` class="${classes.join(" ")}"` : "";
       html += `<td data-vr="${vr}" data-c="${c}"${cls}${tip}><div class="cv">${tagHtml(shown, raw, c)}</div></td>`;
     }

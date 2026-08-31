@@ -541,6 +541,12 @@ people editing different tabs in different browsers means last-writer-wins, and 
 page loaded *before* a tab existed will delete that tab when it next autosaves.
 So: reload `/sheets` after any tab is added, and don't leave it open for days.
 
+A **date column that isn't half of a start/end pair** greys out once the day has
+passed — the Date column on Tours. A term is shaded by where today falls between
+two dates; a column on its own has no span to fall inside, so it gets the simpler
+question, has this day been and gone. Today itself is not shaded: the tour at 4pm
+has not happened yet, and greying it out at breakfast would be wrong.
+
 Tours & Prospects has a **Tour Guide** column, added 2026-07-27 and defaulted to
 the only guide at the time on all 90 rows that have content. The one fully blank row was left blank.
 
