@@ -4,6 +4,7 @@
  *
  *   bun run calendar status                       # config, and what's queued
  *   bun run calendar doctor                       # what the deployed script can do
+ *   bun run calendar doctor --url <u> --secret <s>   # test a candidate, saving nothing
  *   bun run calendar guides                       # list guide → email
  *   bun run calendar guides set <name> <email>    # a guide's address
  *   bun run calendar guides rm <name>
@@ -45,6 +46,21 @@ function die(message: string): never {
   process.exit(1);
 }
 
+/** `--url X --secret Y` → { url: "X", secret: "Y" }. */
+function flags(argv: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (!arg.startsWith("--")) continue;
+    const key = arg.slice(2);
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) die(`--${key} needs a value`);
+    out[key] = value;
+    i++;
+  }
+  return out;
+}
+
 const toursSheet = () =>
   db.query("SELECT columns, rows FROM sheets WHERE id = 'tours'").get() as
     | { columns: string; rows: string }
@@ -75,13 +91,34 @@ switch (cmd) {
   }
 
   case "doctor": {
-    console.log("Asking the deployed Apps Script what it can do…\n");
-    const checks = await checkDeployment();
+    const opts = flags(args);
+    if (opts.url || opts.secret) {
+      console.log(
+        `Testing ${opts.url ? "a given URL" : "the URL in .env"}` +
+          `${opts.secret ? " with a given secret" : ""} — nothing is saved.\n`
+      );
+    } else {
+      console.log("Asking the deployed Apps Script what it can do…\n");
+    }
+    const checks = await checkDeployment(opts.url, opts.secret);
     for (const c of checks) console.log(`  ${c.ok ? "ok  " : "FAIL"}  ${c.name.padEnd(22)} ${c.detail}`);
     const stale = checks.some((c) => !c.ok && c.detail.includes("older than this action"));
+    const placeholder = checks.some((c) => c.name === "placeholder secret");
     const broken = checks.filter((c) => !c.ok);
     console.log("");
-    if (!broken.length) console.log("Everything the CRM needs is live.");
+    if (!broken.length && (opts.url || opts.secret)) {
+      console.log("That combination works. To make it the one the CRM uses, put in .env:");
+      if (opts.url) console.log(`  CALENDAR_WEBHOOK_URL=${opts.url}`);
+      if (opts.secret) console.log(`  CALENDAR_WEBHOOK_SECRET=${opts.secret}`);
+      console.log("…then restart the server.");
+    } else if (!broken.length) console.log("Everything the CRM needs is live.");
+    else if (placeholder) {
+      console.log("Your edit is not reaching this URL. In Apps Script:");
+      console.log("  Deploy → Manage deployments — is the URL there the one above?");
+      console.log("  'New deployment' makes a NEW url; only 'edit → New version' updates this one.");
+      console.log("Test another URL without changing anything:");
+      console.log("  bun run calendar doctor --url <other /exec url> --secret <the secret you set>");
+    }
     else if (stale) {
       console.log("The script in this repo is newer than what Google is serving.");
       console.log("Paste google-apps-script/tour-calendar.gs into the editor, then:");

@@ -874,9 +874,19 @@ export type Check = { name: string; ok: boolean; detail: string };
  * Nothing here writes: the booking probe deliberately sends an event with no
  * title, which is rejected before anything is created.
  */
-export async function checkDeployment(): Promise<Check[]> {
+export async function checkDeployment(
+  urlOverride?: string,
+  secretOverride?: string
+): Promise<Check[]> {
+  // Overridable so a deployment can be tested before anything is committed to
+  // .env — which is the position you are in when edits appear to do nothing
+  // and you need to know whether the URL is even the right one.
+  const WEBHOOK_URL = urlOverride || process.env.CALENDAR_WEBHOOK_URL || "";
+  const WEBHOOK_SECRET = secretOverride || process.env.CALENDAR_WEBHOOK_SECRET || "";
+  const configured = Boolean(WEBHOOK_URL && WEBHOOK_SECRET);
+
   const checks: Check[] = [];
-  if (!calendarConfigured()) {
+  if (!configured) {
     return [
       {
         name: "configuration",
@@ -924,6 +934,19 @@ export async function checkDeployment(): Promise<Check[]> {
       detail: `${err instanceof Error ? err.message : err} — check the deployment is "Anyone" and the URL ends /exec`,
     });
     return checks;
+  }
+
+  // A placeholder secret is answered before any secret check, so catch it here
+  // rather than reporting it as an authorisation problem.
+  const placeholder = await ask({ secret: "REPLACE_ME", event: {} }).catch(() => ({}));
+  if (placeholder.error === "missing title") {
+    checks.push({
+      name: "placeholder secret",
+      ok: false,
+      detail:
+        "this deployment still answers to REPLACE_ME — it is serving code older " +
+        "than your edit, and is open to anyone with the URL",
+    });
   }
 
   const booking = await ask({ secret: WEBHOOK_SECRET, event: {} }).catch((e) => ({ error: String(e) }));
