@@ -106,10 +106,13 @@ export function leadNames(): string[] {
   }
 }
 
+/**
+ * Order is meaningful and is never re-sorted: a person's colour on the calendar
+ * is their position in this list, so sorting it would repaint everybody the
+ * first time somebody named Aaron was added. New names go on the end.
+ */
 export function setLeadNames(names: string[], updatedBy: string) {
-  const unique = [...new Map(names.map((n) => [n.trim().toLowerCase(), n.trim()])).values()].sort(
-    (a, b) => a.localeCompare(b)
-  );
+  const unique = [...new Map(names.map((n) => [n.trim().toLowerCase(), n.trim()])).values()];
   writeSetting.run(PEOPLE_KEY, JSON.stringify(unique), updatedBy);
 }
 

@@ -113,9 +113,19 @@ const AGENDA_CSS = `
       font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px;
       background: #eef2ff; color: #3730a3;
     }
-    /* The lead is the one name that answers "who is doing this", so it is the
-       one that carries weight; anyone else invited sits behind it. */
-    .person.lead { background: var(--accent); color: #fff; }
+    /* The lead is the one name that answers "who is doing this". The colour is
+       a dot, and the name is ordinary ink beside it — three of the hues are
+       under 3:1 on this surface and would drag the text down with them, and
+       identity should never rest on colour alone. */
+    .person.lead {
+      background: none; color: var(--ink); font-weight: 600; padding: 0;
+      display: inline-flex; align-items: center; gap: 5px;
+    }
+    .dot {
+      width: 9px; height: 9px; border-radius: 50%; flex: none;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+    }
+    .dot-none { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
     /* Nobody named. A dash rather than the words "no lead", because in a column
        that repeats down the page the words become the loudest thing on it. */
     .person.none { background: none; color: var(--muted); font-weight: 400; padding-left: 2px; }
@@ -131,6 +141,7 @@ const AGENDA_CSS = `
     .chip {
       font-size: 0.78rem; text-decoration: none; padding: 3px 10px; border-radius: 999px;
       border: 1px solid var(--line); background: #fff; color: var(--ink); white-space: nowrap;
+      display: inline-flex; align-items: center; gap: 5px;
     }
     .chip:hover { border-color: var(--accent); color: var(--accent); }
     .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -200,6 +211,36 @@ export function attendees(guests: string[], knownOnly = false): string[] {
     names.push(name);
   }
   return names;
+}
+
+/**
+ * One hue per person.
+ *
+ * The validated categorical order, used as given. A person's slot is their
+ * position in the people list, which is append-only — colour follows the
+ * person, so adding somebody must not repaint everyone else. Past the eighth
+ * the colour is dropped rather than cycled: two people in the same hue is a
+ * worse lie than no hue at all, and the name is right there either way.
+ */
+const LEAD_HUES = [
+  "#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+  "#e87ba4", "#008300", "#4a3aa7", "#e34948",
+];
+
+/**
+ * The dot beside a lead's name.
+ *
+ * A dot rather than a coloured pill because three of these hues sit under 3:1
+ * against the page and would take the name down with them. The name stays in
+ * ordinary ink and the colour sits next to it, which is also what keeps
+ * identity from resting on colour alone.
+ */
+function leadDot(name: string, people: string[]): string {
+  const at = people.findIndex((p) => p.toLowerCase() === name.toLowerCase());
+  const hue = at >= 0 && at < LEAD_HUES.length ? LEAD_HUES[at] : null;
+  return hue
+    ? `<span class="dot" style="background:${hue}"></span>`
+    : `<span class="dot dot-none"></span>`;
 }
 
 /** "unassigned" is a placeholder the tour titles use, not a person. */
@@ -277,8 +318,11 @@ function renderEvent(e: AgendaEvent): string {
   // The lead has a column of its own between the time and the title, so a day
   // can be read down two narrow columns — when, and who — without the eye
   // having to enter each event to find out.
+  const people = leadNames();
   const leadCell = lead.length
-    ? lead.map((n) => `<span class="person lead">${escapeHtml(n)}</span>`).join("")
+    ? lead
+        .map((n) => `<span class="person lead">${leadDot(n, people)}${escapeHtml(n)}</span>`)
+        .join("")
     : `<span class="person none">&mdash;</span>`;
 
   return (
@@ -320,9 +364,9 @@ function problemHtml(reason: string): string {
 export type AgendaFilters = { address?: string; lead?: string };
 
 /** A filter chip, which turns itself off when it is the one already on. */
-function chip(label: string, active: boolean, href: string, count?: number): string {
+function chip(label: string, active: boolean, href: string, count?: number, dot = ""): string {
   return (
-    `<a class="chip${active ? " on" : ""}" href="${escapeHtml(href)}">${escapeHtml(label)}` +
+    `<a class="chip${active ? " on" : ""}" href="${escapeHtml(href)}">${dot}${escapeHtml(label)}` +
     (count === undefined ? "" : `<span class="chip-n">${count}</span>`) +
     `</a>`
   );
@@ -396,7 +440,8 @@ export async function renderAgendaPage(
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([n, c]) =>
           chip(n, filters.lead?.toLowerCase() === n.toLowerCase(),
-            link({ address: filters.address, lead: filters.lead?.toLowerCase() === n.toLowerCase() ? undefined : n }), c)
+            link({ address: filters.address, lead: filters.lead?.toLowerCase() === n.toLowerCase() ? undefined : n }),
+            c, leadDot(n, leadNames()))
         )
         .join("") +
       chip("nobody", filters.lead === "none",

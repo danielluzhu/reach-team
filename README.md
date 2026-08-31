@@ -719,6 +719,19 @@ disagree and the first is the most deliberate:
    is — and in practice it is theirs.
 4. **Whoever is invited**, failing all of those.
 
+Each lead carries a colour — a dot beside the name, matched on the filter chip
+so the two read as one system. It is the validated eight-hue categorical order,
+used as given; a person's hue is their **position in the people list**, which is
+append-only, because colour has to follow the person rather than their rank —
+sorting the list would repaint everyone the first time somebody named Aaron was
+added. Past the eighth person the dot is dropped rather than cycled: two people
+in one hue is a worse lie than no hue, and the name is right there either way.
+So put the people you actually see first.
+
+The colour is a dot and the name stays in ordinary ink, rather than a coloured
+pill: three of those hues sit under 3:1 against this page and would take the
+text down with them, and identity should never rest on colour alone.
+
     bun run calendar people                   who can lead an event
     bun run calendar people add Carlos Yuliet
     bun run calendar people rm Carlos
