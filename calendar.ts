@@ -597,12 +597,29 @@ const markSent = db.prepare(
   `UPDATE tour_events SET state = 'sent', event_id = ?, event_url = ?,
      sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE key = ?`
 );
+const markThrottled = db.prepare(
+  `UPDATE tour_events SET last_error = ? WHERE key = ?`
+);
 const markFailed = db.prepare(
   `UPDATE tour_events SET state = ?, attempts = attempts + 1, last_error = ? WHERE key = ?`
 );
 
 /** Give up after this many tries and leave the row for a human to look at. */
 const MAX_ATTEMPTS = 6;
+
+/**
+ * A pause between posts.
+ *
+ * Google throttles bursts — "you have been creating or deleting too many
+ * calendar events in a short time" — which a backfill or a bulk re-send walks
+ * straight into. The retry loop recovers from it, but a rejected write is
+ * still a write that had to happen twice, and a queue that trips the limit on
+ * every pass makes a slow job slower. A short gap costs nothing on the
+ * one-event case that is almost always what this is doing.
+ */
+const BETWEEN_POSTS_MS = 400;
+
+const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Posts whatever is queued to the Apps Script, one at a time.
@@ -621,7 +638,10 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
     event_id: string | null;
   }[];
 
+  let first = true;
   for (const row of pending) {
+    if (!first) await pause(BETWEEN_POSTS_MS);
+    first = false;
     const event = JSON.parse(row.payload) as TourEvent;
     // An id means the event is already on the calendar and this is an edit.
     const updating = Boolean(row.event_id);
@@ -655,6 +675,19 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      // Being throttled says nothing about this event — it says the last few
+      // succeeded. Counting it toward the give-up limit would let a busy
+      // minute permanently fail a tour that was never wrong.
+      const throttled = /too many calendar|rate limit|quota|try again later/i.test(message);
+      if (throttled) {
+        markThrottled.run(message, row.key);
+        console.warn(
+          `[${new Date().toISOString()}] calendar throttled on "${event.title}" — ` +
+            `will retry, attempt not counted`
+        );
+        await pause(2_000);
+        continue;
+      }
       const done = row.attempts + 1 >= MAX_ATTEMPTS;
       markFailed.run(done ? "failed" : "pending", message, row.key);
       console.error(
