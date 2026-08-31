@@ -89,8 +89,15 @@ const AGENDA_CSS = `
     /* Today is the row somebody came to the page to read. */
     .day.is-today > h2 { color: var(--accent); border-bottom-color: var(--accent); }
     .slot {
-      display: grid; grid-template-columns: 88px 1fr; gap: 14px;
+      display: grid; grid-template-columns: 76px 104px 1fr; gap: 14px;
       padding: 9px 10px; border-radius: 8px; align-items: baseline;
+    }
+    .slot .lead-col { display: flex; gap: 4px; flex-wrap: wrap; min-width: 0; }
+    /* On a phone the three columns become two lines rather than three slivers:
+       time and lead stay together on top, the event reads underneath. */
+    @media (max-width: 640px) {
+      .slot { grid-template-columns: 76px 1fr; row-gap: 4px; }
+      .slot .what { grid-column: 1 / -1; }
     }
     .slot + .slot { border-top: 1px solid #f1f3f5; }
     .slot:hover { background: #f7faff; }
@@ -100,7 +107,8 @@ const AGENDA_CSS = `
     .slot .where { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
     .slot .who { margin-top: 4px; display: flex; gap: 5px; flex-wrap: wrap; }
     /* Who is running it, as a name rather than an address: the thing you are
-       looking for when scanning a day is a person, not a mailbox. */
+       looking for when scanning a day is a person, not a mailbox. Anyone else
+       invited stays under the title, so the column holds one answer. */
     .person {
       font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px;
       background: #eef2ff; color: #3730a3;
@@ -108,7 +116,9 @@ const AGENDA_CSS = `
     /* The lead is the one name that answers "who is doing this", so it is the
        one that carries weight; anyone else invited sits behind it. */
     .person.lead { background: var(--accent); color: #fff; }
-    .person.none { background: #fff4e0; color: #a15c00; font-weight: 500; }
+    /* Nobody named. A dash rather than the words "no lead", because in a column
+       that repeats down the page the words become the loudest thing on it. */
+    .person.none { background: none; color: var(--muted); font-weight: 400; padding-left: 2px; }
     .virtual-tag {
       display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
       font-size: 11px; font-weight: 700; background: #ede9fe; color: #5b21b6;
@@ -217,18 +227,25 @@ function renderEvent(e: AgendaEvent): string {
   const others = attendees(e.guests ?? []).filter(
     (n) => !lead.some((l) => l.toLowerCase() === n.toLowerCase())
   );
+  // The lead has a column of its own between the time and the title, so a day
+  // can be read down two narrow columns — when, and who — without the eye
+  // having to enter each event to find out.
+  const leadCell = lead.length
+    ? lead.map((n) => `<span class="person lead">${escapeHtml(n)}</span>`).join("")
+    : `<span class="person none">&mdash;</span>`;
+
   return (
     `<div class="slot">` +
     `<div class="when">${e.allDay ? "all day" : escapeHtml(clock(e.start))}</div>` +
+    `<div class="lead-col">${leadCell}</div>` +
     `<div class="what">` +
     `<div class="title">${title}${virtual ? `<span class="virtual-tag">VIRTUAL</span>` : ""}</div>` +
     (e.location ? `<div class="where">${escapeHtml(e.location)}</div>` : "") +
-    (lead.length || others.length
-      ? `<div class="who">` +
-        lead.map((n) => `<span class="person lead">${escapeHtml(n)}</span>`).join("") +
-        others.map((n) => `<span class="person">${escapeHtml(n)}</span>`).join("") +
-        `</div>`
-      : `<div class="who"><span class="person none">no lead</span></div>`) +
+    (others.length
+      ? `<div class="who">${others
+          .map((n) => `<span class="person">${escapeHtml(n)}</span>`)
+          .join("")}</div>`
+      : "") +
     `</div></div>`
   );
 }
