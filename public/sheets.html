@@ -344,6 +344,34 @@ function parseDateInput(value) {
   return iso;
 }
 
+/**
+ * A time cell as minutes past midnight, or null if it isn't a time.
+ *
+ * The column is written every way a person writes a time: "2:30PM", "7.00pm",
+ * "9 am", "14:30", and — where a tour moved — "12:50PM (1:10PM actual)". The
+ * booked time is the one outside the brackets. Sorting on the text instead put
+ * 9:00AM after 10:00AM, which is the whole reason this exists.
+ */
+function parseTimeInput(value) {
+  let text = String(value ?? "").trim();
+  const bracket = text.match(/^(.*?)\s*\(.*\)\s*$/);
+  if (bracket) text = bracket[1].trim();
+  text = text.replace(/\./g, ":");
+  const m = text.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i)
+        || text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  let hour = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  const half = m[3] ? m[3].toLowerCase() : null;
+  if (min > 59) return null;
+  if (half) {
+    if (hour < 1 || hour > 12) return null;
+    if (half === "p" && hour !== 12) hour += 12;
+    if (half === "a" && hour === 12) hour = 0;
+  } else if (hour > 23) return null;
+  return hour * 60 + min;
+}
+
 /** What a typed or pasted value is stored as. Only date columns change. */
 function normalizeValue(value, col) {
   if (!col || col.type !== "date") return value;
@@ -1094,7 +1122,16 @@ function sortBy(c, dir) {
   // an older row, or a paste from somewhere that doesn't go through
   // normalizeValue(). Values that aren't dates at all fall through to the
   // ordinary text comparison below.
-  const key = (v) => (col && col.type === "date" ? parseDateInput(v) ?? v : v);
+  // A time sorts on the clock, not the text: "9:00AM" after "10:00AM" is what
+  // a plain string comparison gives, and it is wrong every morning.
+  const key = (v) => {
+    if (col && col.type === "date") return parseDateInput(v) ?? v;
+    if (col && col.type === "time") {
+      const mins = parseTimeInput(v);
+      return mins === null ? v : mins;
+    }
+    return v;
+  };
   sheet().rows.sort((a, b) => {
     const x = key(a[c]), y = key(b[c]);
     if (blank(x) && blank(y)) return 0;
