@@ -28,6 +28,34 @@
 
 var SECRET = 'REPLACE_ME';
 
+/**
+ * Which calendar the tours live on.
+ *
+ * Leave blank to use the deploying account's own default calendar. Set it to
+ * an address — 'office@example.com' — to put tours somewhere shared instead.
+ *
+ * Worth being deliberate about: the default calendar is whichever one belongs
+ * to the account that pressed Deploy, which is easily somebody's personal
+ * calendar. Tours then land among their private events, and anything reading
+ * the calendar back reads those too.
+ *
+ * For an address other than the deploying account's own, that account needs
+ * "Make changes to events" on it, shared from Google Calendar's settings.
+ */
+var CALENDAR_ID = '';
+
+function targetCalendar() {
+  if (!CALENDAR_ID) return CalendarApp.getDefaultCalendar();
+  var found = CalendarApp.getCalendarById(CALENDAR_ID);
+  if (!found) {
+    throw new Error(
+      'CALENDAR_ID ' + CALENDAR_ID + ' is not a calendar this account can open — ' +
+      'share it with "Make changes to events" first'
+    );
+  }
+  return found;
+}
+
 function doPost(e) {
   try {
     if (!e || !e.postData || !e.postData.contents) return reply({ error: 'empty request' });
@@ -56,7 +84,7 @@ function doPost(e) {
     // one does list the calendar — that is the point of it — so it returns
     // only what a page needs to draw and caps how much comes back.
     if (body.action === 'agenda') {
-      var agendaCal = CalendarApp.getDefaultCalendar();
+      var agendaCal = targetCalendar();
       var agendaTz = body.timeZone || 'America/Los_Angeles';
       var found = agendaCal.getEvents(
         parseInTz(body.from + ' 00:00:00', agendaTz),
@@ -93,7 +121,7 @@ function doPost(e) {
     // an edit a guest made. Ids are asked for explicitly: this never lists
     // the calendar, only the events the CRM itself booked.
     if (body.action === 'read') {
-      var cal = CalendarApp.getDefaultCalendar();
+      var cal = targetCalendar();
       var tz = body.timeZone || 'America/Los_Angeles';
       var out = [];
       var ids = (body.eventIds || []).slice(0, 100);
@@ -129,7 +157,7 @@ function doPost(e) {
     var ev = body.event || {};
     if (!ev.title) return reply({ error: 'missing title' });
 
-    var cal = CalendarApp.getDefaultCalendar();
+    var cal = targetCalendar();
     var tz = ev.timeZone || 'America/Los_Angeles';
 
     // An eventId means the tour was edited and the event already exists.
@@ -230,6 +258,6 @@ function reply(obj) {
 
 /** Run once from the editor to confirm the calendar is reachable and grant scopes. */
 function selfTest() {
-  Logger.log('Default calendar: ' + CalendarApp.getDefaultCalendar().getName());
+  Logger.log('Writing to calendar: ' + targetCalendar().getName());
   Logger.log('Parsed: ' + parseInTz('2026-08-23 14:00:00', 'America/Los_Angeles'));
 }

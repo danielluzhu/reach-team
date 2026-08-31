@@ -605,7 +605,21 @@ owned by that account and the invites come from it — with no OAuth client to
 register and no refresh token stored on this box.
 
 `google-apps-script/tour-calendar.gs` is the copy of record for what is
-deployed, and carries its own deployment instructions. Set both of these in the
+deployed, and carries its own deployment instructions. Two constants at the
+top of it matter:
+
+- `SECRET` — must be replaced. The file is public, so the placeholder is a
+  known string; the script refuses every request until a real one is set,
+  which is what stops a deployment made by pasting this file being open to
+  anyone who has the URL.
+- `CALENDAR_ID` — blank means the deploying account's **own default calendar**,
+  which is easily somebody's personal one. Tours then land among their private
+  events, and the calendar page reads those back too. Set it to the shared
+  address to avoid that.
+
+Re-pasting this file over a working deployment resets both, so check them
+after any update — `bun run calendar doctor` will say if the secret no longer
+matches. Set both of these in the
 service environment, then restart:
 
     CALENDAR_WEBHOOK_URL=https://script.google.com/macros/s/…/exec
