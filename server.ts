@@ -1800,7 +1800,15 @@ const server = Bun.serve({
     if (url.pathname === "/calendar") {
       if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
       return new Response(
-        await renderAgendaPage(renderNav("/calendar", user), NAV_CSS, url.searchParams.get("start") ?? undefined),
+        await renderAgendaPage(
+          renderNav("/calendar", user),
+          NAV_CSS,
+          url.searchParams.get("start") ?? undefined,
+          {
+            address: url.searchParams.get("address") ?? undefined,
+            lead: url.searchParams.get("lead") ?? undefined,
+          }
+        ),
         { headers: HTML_HEADERS }
       );
     }

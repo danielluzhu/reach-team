@@ -727,7 +727,23 @@ They are names rather than addresses, because a contractor appears in a title
 long before anyone has their email — and they live in settings, not source,
 since they are real people and this repository is public.
 
-An event with no lead says **no lead** rather than showing nothing, since a job
+### Filtering
+
+Chips above the agenda narrow it by **property** and by **lead**, and the two
+combine. They are built from what the window actually holds, so they never
+offer a choice that leads nowhere, and each carries a count taken from the
+unfiltered set so turning one on doesn't renumber the others. `nobody` finds
+the events with no lead, which is the list worth clearing.
+
+The property is the street number — `2120`, `4735` — taken from the location
+when there is one and from the front of the title when there isn't, because
+almost every hand-typed event opens with it and that is how the office refers
+to a building.
+
+Filters are query parameters (`/calendar?address=2120&lead=Harsh`), so a
+filtered view is a link somebody can send.
+
+An event with no lead shows a dash rather than a name, since a job
 nobody is named on is worth seeing. Around half of a typical month has one:
 inspections and `Tour for <prospect>` entries name nobody, and that is a gap in
 the calendar rather than something this can infer.

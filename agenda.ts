@@ -123,6 +123,19 @@ const AGENDA_CSS = `
       display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
       font-size: 11px; font-weight: 700; background: #ede9fe; color: #5b21b6;
     }
+    .filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 0 0 8px; }
+    .filter-label {
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); width: 64px; flex: none;
+    }
+    .chip {
+      font-size: 0.78rem; text-decoration: none; padding: 3px 10px; border-radius: 999px;
+      border: 1px solid var(--line); background: #fff; color: var(--ink); white-space: nowrap;
+    }
+    .chip:hover { border-color: var(--accent); color: var(--accent); }
+    .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    /* The count is what makes a chip worth reading before clicking it. */
+    .chip-n { opacity: 0.55; margin-left: 5px; font-variant-numeric: tabular-nums; }
     .agenda-empty { color: var(--muted); padding: 26px 0; }
     .agenda-problem {
       padding: 14px 16px; border-radius: 8px; background: #fff8e1;
@@ -229,6 +242,21 @@ export function leadFor(
   return attendees(guests);
 }
 
+/**
+ * The property an event is about, as its street number.
+ *
+ * Almost every title opens with it — "4735 4 cleaning carlos", "2120 flooring
+ * quong" — because that is how the office refers to a building, and it is the
+ * same short label the tour titles use. The location field is the better
+ * source when there is one, but most hand-typed events have none.
+ */
+export function addressOf(e: AgendaEvent): string | null {
+  const fromLocation = (e.location ?? "").match(/^\s*(\d{3,5})\b/);
+  if (fromLocation) return fromLocation[1]!;
+  const fromTitle = e.title.match(/^\s*(\d{3,5})\b/);
+  return fromTitle ? fromTitle[1]! : null;
+}
+
 function renderEvent(e: AgendaEvent): string {
   const virtual = /\(virtual\)/i.test(e.title);
   const title = escapeHtml(e.title.replace(/\s*\(virtual\)\s*$/i, ""));
@@ -280,21 +308,93 @@ function problemHtml(reason: string): string {
  * The page. `start` is the first day shown; the window runs WINDOW_DAYS from
  * there, so the arrows page through the calendar a month at a time.
  */
+export type AgendaFilters = { address?: string; lead?: string };
+
+/** A filter chip, which turns itself off when it is the one already on. */
+function chip(label: string, active: boolean, href: string, count?: number): string {
+  return (
+    `<a class="chip${active ? " on" : ""}" href="${escapeHtml(href)}">${escapeHtml(label)}` +
+    (count === undefined ? "" : `<span class="chip-n">${count}</span>`) +
+    `</a>`
+  );
+}
+
 export async function renderAgendaPage(
   nav: string,
   navCss: string,
-  start?: string
+  start?: string,
+  filters: AgendaFilters = {}
 ): Promise<string> {
   const today = todayHere();
   const from = /^\d{4}-\d{2}-\d{2}$/.test(start ?? "") ? start! : today;
   const to = addDays(from, WINDOW_DAYS - 1);
 
   let body: string;
+  let bar = "";
   let heading = "Calendar";
   try {
     const { calendar, events } = await fetchAgenda(from, to);
     if (calendar) heading = escapeHtml(calendar);
-    const days = byDay(events);
+
+    // The filters are built from what this window actually holds, so they only
+    // ever offer a choice that leads somewhere. Counts come from the unfiltered
+    // set, so turning one on doesn't renumber the others.
+    const addressCounts = new Map<string, number>();
+    const leadCounts = new Map<string, number>();
+    for (const e of events) {
+      const a = addressOf(e);
+      if (a) addressCounts.set(a, (addressCounts.get(a) ?? 0) + 1);
+      for (const n of leadFor(e.title, e.guests ?? [], e.creators ?? [])) {
+        leadCounts.set(n, (leadCounts.get(n) ?? 0) + 1);
+      }
+    }
+
+    const keep = events.filter((e) => {
+      if (filters.address && addressOf(e) !== filters.address) return false;
+      if (filters.lead) {
+        const names = leadFor(e.title, e.guests ?? [], e.creators ?? []);
+        const wanted = filters.lead.toLowerCase();
+        if (wanted === "none") return names.length === 0;
+        if (!names.some((n) => n.toLowerCase() === wanted)) return false;
+      }
+      return true;
+    });
+
+    const link = (next: AgendaFilters) => {
+      const p = new URLSearchParams();
+      if (start) p.set("start", from);
+      if (next.address) p.set("address", next.address);
+      if (next.lead) p.set("lead", next.lead);
+      const q = p.toString();
+      return q ? `/calendar?${q}` : "/calendar";
+    };
+
+    bar =
+      `<div class="filters">` +
+      `<span class="filter-label">Property</span>` +
+      chip("all", !filters.address, link({ lead: filters.lead })) +
+      [...addressCounts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([a, n]) =>
+          chip(a, filters.address === a, link({ address: filters.address === a ? undefined : a, lead: filters.lead }), n)
+        )
+        .join("") +
+      `</div>` +
+      `<div class="filters">` +
+      `<span class="filter-label">Lead</span>` +
+      chip("all", !filters.lead, link({ address: filters.address })) +
+      [...leadCounts.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([n, c]) =>
+          chip(n, filters.lead?.toLowerCase() === n.toLowerCase(),
+            link({ address: filters.address, lead: filters.lead?.toLowerCase() === n.toLowerCase() ? undefined : n }), c)
+        )
+        .join("") +
+      chip("nobody", filters.lead === "none",
+        link({ address: filters.address, lead: filters.lead === "none" ? undefined : "none" })) +
+      `</div>`;
+
+    const days = byDay(keep);
     body = days.length
       ? days
           .map(
@@ -305,8 +405,11 @@ export async function renderAgendaPage(
               `</section>`
           )
           .join("")
-      : `<p class="agenda-empty">Nothing on the calendar between
-         ${escapeHtml(niceDay(from))} and ${escapeHtml(niceDay(to))}.</p>`;
+      : `<p class="agenda-empty">${
+          filters.address || filters.lead
+            ? "Nothing matches that filter in this window."
+            : `Nothing on the calendar between ${escapeHtml(niceDay(from))} and ${escapeHtml(niceDay(to))}.`
+        }</p>`;
   } catch (err) {
     body = problemHtml(err instanceof Error ? err.message : String(err));
   }
@@ -337,6 +440,7 @@ ${AGENDA_CSS}
     </div>
     <p class="lede">${escapeHtml(niceDay(from))} to ${escapeHtml(niceDay(to))} &mdash;
       read from the calendar each time this page is opened, so it is never stale.</p>
+${bar}
 ${body}
   </div>
 </body>
