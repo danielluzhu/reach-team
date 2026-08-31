@@ -174,7 +174,7 @@ function byDay(events: AgendaEvent[]): [string, AgendaEvent[]][] {
  * The standing office mailbox is dropped: it is on every single event, so
  * printing it says nothing and crowds out the name that does.
  */
-export function attendees(guests: string[]): string[] {
+export function attendees(guests: string[], knownOnly = false): string[] {
   const known = new Map(
     Object.entries(guideEmails()).map(([name, email]) => [
       email.toLowerCase(),
@@ -187,7 +187,14 @@ export function attendees(guests: string[]): string[] {
   for (const guest of guests) {
     const email = guest.toLowerCase().trim();
     if (!email || standing.has(email)) continue;
-    const name = known.get(email) ?? guest.split("@")[0]!;
+    const mapped = known.get(email);
+    // Deciding who is in charge is not the place to guess. Prospects get
+    // invited to their own tours — "2120 Kim Virtual Tour" has the prospect
+    // and the guide on it — so an address nobody has named must not be able to
+    // become the lead. Listing who else is coming is a different question, and
+    // there an unrecognised address is still worth showing.
+    if (!mapped && knownOnly) continue;
+    const name = mapped ?? guest.split("@")[0]!;
     if (seen.has(name.toLowerCase())) continue;
     seen.add(name.toLowerCase());
     names.push(name);
@@ -215,7 +222,9 @@ const NOT_A_PERSON = /^(unassigned|tbd|n\/a|none|\?+)$/i;
  *  3. Whoever put the event on the calendar. An inspection invites nobody and
  *     names nobody, so the person who booked it is the only record of whose
  *     job it is — and in practice it is theirs.
- *  4. Failing all of those, whoever is invited.
+ *  4. Failing all of those, whoever is invited — but only people we can name.
+ *     A prospect is a guest at their own tour, and must never be read as
+ *     running it.
  */
 export function leadFor(
   title: string,
@@ -236,10 +245,10 @@ export function leadFor(
   );
   if (found.length) return found;
 
-  const host = attendees(creators);
+  const host = attendees(creators, true);
   if (host.length) return host;
 
-  return attendees(guests);
+  return attendees(guests, true);
 }
 
 /**
