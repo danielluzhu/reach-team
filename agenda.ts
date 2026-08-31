@@ -1,5 +1,11 @@
 import { FAVICON_LINK } from "./auth";
-import { TOUR_TIMEZONE, fetchAgenda, type AgendaEvent } from "./calendar";
+import {
+  STANDING_GUESTS,
+  TOUR_TIMEZONE,
+  fetchAgenda,
+  guideEmails,
+  type AgendaEvent,
+} from "./calendar";
 import { PAGE_CSS } from "./inspections";
 
 /**
@@ -91,7 +97,13 @@ const AGENDA_CSS = `
     .slot .what { min-width: 0; }
     .slot .title { font-weight: 600; }
     .slot .where { color: var(--muted); font-size: 0.85rem; margin-top: 2px; }
-    .slot .who { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
+    .slot .who { margin-top: 4px; display: flex; gap: 5px; flex-wrap: wrap; }
+    /* Who is running it, as a name rather than an address: the thing you are
+       looking for when scanning a day is a person, not a mailbox. */
+    .person {
+      font-size: 0.75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+      background: #eef2ff; color: #3730a3;
+    }
     .virtual-tag {
       display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
       font-size: 11px; font-weight: 700; background: #ede9fe; color: #5b21b6;
@@ -122,19 +134,54 @@ function byDay(events: AgendaEvent[]): [string, AgendaEvent[]][] {
     );
 }
 
+/**
+ * Who is on an event, said as names.
+ *
+ * The guest list is addresses, which is the least useful way to answer "who is
+ * doing this one" while scanning a day. The guide map already pairs a first
+ * name with an address, so it is read backwards here. An address nobody has
+ * named shows the part before the @, which is usually close enough to
+ * recognise and always better than forty characters of domain.
+ *
+ * The standing office mailbox is dropped: it is on every single event, so
+ * printing it says nothing and crowds out the name that does.
+ */
+export function attendees(guests: string[]): string[] {
+  const known = new Map(
+    Object.entries(guideEmails()).map(([name, email]) => [
+      email.toLowerCase(),
+      name.charAt(0).toUpperCase() + name.slice(1),
+    ])
+  );
+  const standing = new Set(STANDING_GUESTS.map((g) => g.toLowerCase()));
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const guest of guests) {
+    const email = guest.toLowerCase().trim();
+    if (!email || standing.has(email)) continue;
+    const name = known.get(email) ?? guest.split("@")[0]!;
+    if (seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    names.push(name);
+  }
+  return names;
+}
+
 function renderEvent(e: AgendaEvent): string {
   const virtual = /\(virtual\)/i.test(e.title);
   const title = escapeHtml(e.title.replace(/\s*\(virtual\)\s*$/i, ""));
-  // The guest list is who is expected there, which is the useful half of the
-  // description without reprinting a prospect's phone number on a wall display.
-  const guests = (e.guests ?? []).join(", ");
+  const who = attendees(e.guests ?? []);
   return (
     `<div class="slot">` +
     `<div class="when">${e.allDay ? "all day" : escapeHtml(clock(e.start))}</div>` +
     `<div class="what">` +
     `<div class="title">${title}${virtual ? `<span class="virtual-tag">VIRTUAL</span>` : ""}</div>` +
     (e.location ? `<div class="where">${escapeHtml(e.location)}</div>` : "") +
-    (guests ? `<div class="who">${escapeHtml(guests)}</div>` : "") +
+    (who.length
+      ? `<div class="who">${who
+          .map((n) => `<span class="person">${escapeHtml(n)}</span>`)
+          .join("")}</div>`
+      : "") +
     `</div></div>`
   );
 }
