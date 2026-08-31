@@ -859,6 +859,104 @@ export function requeueSentEvents(): number {
   return requeueAll.run().changes;
 }
 
+export type Check = { name: string; ok: boolean; detail: string };
+
+/**
+ * What the deployed Apps Script can actually do right now.
+ *
+ * The script gains actions over time but a deployment serves whatever version
+ * was published, so "the code is right" and "the thing answering is right" are
+ * different questions — and the second one is the one that breaks. An action
+ * the deployment doesn't know falls through to the booking path and answers
+ * "missing title", which is a confusing thing to meet on a calendar page, so
+ * this asks each one directly and says which are live.
+ *
+ * Nothing here writes: the booking probe deliberately sends an event with no
+ * title, which is rejected before anything is created.
+ */
+export async function checkDeployment(): Promise<Check[]> {
+  const checks: Check[] = [];
+  if (!calendarConfigured()) {
+    return [
+      {
+        name: "configuration",
+        ok: false,
+        detail: "CALENDAR_WEBHOOK_URL / CALENDAR_WEBHOOK_SECRET are not both set in .env",
+      },
+    ];
+  }
+  checks.push({ name: "configuration", ok: true, detail: WEBHOOK_URL });
+
+  const ask = async (payload: Record<string, unknown>): Promise<any> => {
+    const res = await fetch(WEBHOOK_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(45_000),
+    });
+    const text = await res.text();
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error(`HTTP ${res.status}, and not JSON: ${text.slice(0, 90)}`);
+    }
+  };
+
+  try {
+    const wrong = await ask({ secret: "deliberately-wrong", event: { title: "x" } });
+    checks.push({
+      name: "reachable",
+      ok: true,
+      detail: "the deployment answers, and is readable without a Google login",
+    });
+    checks.push({
+      name: "secret",
+      ok: wrong.error === "unauthorized",
+      detail:
+        wrong.error === "unauthorized"
+          ? "a wrong secret is refused, as it should be"
+          : `a wrong secret was NOT refused (got ${JSON.stringify(wrong).slice(0, 60)})`,
+    });
+  } catch (err) {
+    checks.push({
+      name: "reachable",
+      ok: false,
+      detail: `${err instanceof Error ? err.message : err} — check the deployment is "Anyone" and the URL ends /exec`,
+    });
+    return checks;
+  }
+
+  const booking = await ask({ secret: WEBHOOK_SECRET, event: {} }).catch((e) => ({ error: String(e) }));
+  checks.push({
+    name: "booking events",
+    ok: booking.error === "missing title",
+    detail:
+      booking.error === "missing title"
+        ? "live — the secret is accepted and events can be created"
+        : `unexpected reply: ${JSON.stringify(booking).slice(0, 80)}`,
+  });
+
+  for (const [name, payload] of [
+    ["reading guest edits", { action: "read", eventIds: [] }],
+    ["listing the calendar", { action: "agenda", from: "2000-01-01", to: "2000-01-01" }],
+  ] as const) {
+    const reply = await ask({ secret: WEBHOOK_SECRET, ...payload, timeZone: TOUR_TIMEZONE }).catch(
+      (e) => ({ error: String(e) })
+    );
+    checks.push({
+      name,
+      ok: reply.ok === true,
+      detail:
+        reply.ok === true
+          ? "live"
+          : reply.error === "missing title"
+            ? "the deployment is serving a version older than this action"
+            : `failed: ${JSON.stringify(reply).slice(0, 80)}`,
+    });
+  }
+  return checks;
+}
+
 export type CalendarChange = {
   key: string;
   title: string;

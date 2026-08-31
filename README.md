@@ -698,6 +698,16 @@ It needs the same webhook config as the tour bookings, and a deployment new
 enough to know the `agenda` action. When either is missing the page says which
 one and what to do about it, rather than failing blankly.
 
+    bun run calendar doctor
+
+asks the deployment what it can actually do. The script gains actions over
+time but a deployment serves whatever version was published, so "the code is
+right" and "the thing answering is right" are different questions — and the
+second is the one that breaks. An action the deployment doesn't know falls
+through to the booking path and answers `missing title`, which is a baffling
+thing to meet on a calendar page, so `doctor` asks each one directly and names
+the ones that are stale.
+
 ## Driveway plates
 
 Cars parked in the driveway that shouldn't be, at `/plates`. The point of the

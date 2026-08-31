@@ -3,6 +3,7 @@
  * The tour → calendar plumbing, from the command line.
  *
  *   bun run calendar status                       # config, and what's queued
+ *   bun run calendar doctor                       # what the deployed script can do
  *   bun run calendar guides                       # list guide → email
  *   bun run calendar guides set <name> <email>    # a guide's address
  *   bun run calendar guides rm <name>
@@ -24,6 +25,7 @@ import {
   STANDING_GUESTS,
   TOUR_TIMEZONE,
   calendarConfigured,
+  checkDeployment,
   flushQueue,
   pollCalendarChanges,
   requeueSentEvents,
@@ -70,6 +72,23 @@ switch (cmd) {
     );
     if (!on) console.log("\nEvents are being queued but not sent. See google-apps-script/tour-calendar.gs");
     break;
+  }
+
+  case "doctor": {
+    console.log("Asking the deployed Apps Script what it can do…\n");
+    const checks = await checkDeployment();
+    for (const c of checks) console.log(`  ${c.ok ? "ok  " : "FAIL"}  ${c.name.padEnd(22)} ${c.detail}`);
+    const stale = checks.some((c) => !c.ok && c.detail.includes("older than this action"));
+    const broken = checks.filter((c) => !c.ok);
+    console.log("");
+    if (!broken.length) console.log("Everything the CRM needs is live.");
+    else if (stale) {
+      console.log("The script in this repo is newer than what Google is serving.");
+      console.log("Paste google-apps-script/tour-calendar.gs into the editor, then:");
+      console.log("  Deploy → Manage deployments → edit (pencil) → Version: New version → Deploy");
+      console.log("The /exec URL does not change. Re-run this command afterwards.");
+    }
+    process.exit(broken.length ? 1 : 0);
   }
 
   case "guides": {
