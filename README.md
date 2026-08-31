@@ -569,8 +569,15 @@ once as `sms:`, each labelled Call or Text, so a guide standing outside a
 building taps the right one instead of copying digits:
 
     Phone: 4255757178 (Wendy)
-    Call Wendy: tel:+14255757178
-    Text Wendy: sms:+14255757178
+    <a href="tel:+14255757178">Call Wendy</a> | <a href="sms:+14255757178">Text Wendy</a>
+
+They are real anchors, not `tel:` written out as text, because the person
+reading this is standing outside a building holding a phone: one press should
+open the dialler or the messages app, not select a string to copy. Google
+Calendar renders a subset of HTML in descriptions, which is what makes that
+work — and it is why every value written into a description is HTML-escaped.
+The values come out of a spreadsheet, and a note reading `3-bed & parking
+<before Sept>` must not be able to break the markup or inject any.
 
 The number as written is always kept alongside, because that is what somebody
 recorded. A cell holding two numbers gets a pair of links each; a number that

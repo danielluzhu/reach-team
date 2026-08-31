@@ -265,6 +265,20 @@ function guideNames(raw: string): string[] {
  */
 const VIRTUAL = /\b(virtual|zoom|facetime|video tour)\b/i;
 
+/**
+ * Everything written into a description is escaped, because the description is
+ * HTML and the values come out of a spreadsheet. A note reading "Wants a 3-bed
+ * & parking <before Sept>" must not be able to break the markup — or inject
+ * any.
+ */
+function esc(value: unknown): string {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 export type PhoneEntry = { display: string; e164: string | null; label: string | null };
 
 /**
@@ -303,20 +317,33 @@ export function phoneEntries(raw: string): PhoneEntry[] {
 
 /**
  * The contact lines for an event description: the number as written, then a
- * tel: and an sms: for it, each said in words so it is obvious on a phone
- * which one rings and which one opens a message.
+ * real link to call it and a real link to text it.
+ *
+ * They are anchors rather than bare `tel:` text because the person reading
+ * this is standing outside a building holding a phone — one press should open
+ * the dialler or the messages app, not select a string to copy. Google
+ * Calendar renders a subset of HTML in descriptions, which is what makes that
+ * possible; each link says in words which one it is, since an icon alone is
+ * ambiguous and the two actions are not interchangeable.
  */
 export function contactLines(raw: string): string[] {
   const phone = raw.trim();
   if (!phone) return ["Phone: (none on file)"];
 
   const entries = phoneEntries(phone);
-  const lines = [`Phone: ${phone}`];
+  const lines = [`Phone: ${esc(phone)}`];
   for (const entry of entries) {
     if (!entry.e164) continue;
-    const who = entry.label ? ` ${entry.label}` : entries.length > 1 ? ` ${entry.display}` : "";
-    lines.push(`Call${who}: tel:${entry.e164}`);
-    lines.push(`Text${who}: sms:${entry.e164}`);
+    const who = entry.label
+      ? ` ${esc(entry.label)}`
+      : entries.length > 1
+        ? ` ${esc(entry.display)}`
+        : "";
+    lines.push(
+      `<a href="tel:${esc(entry.e164)}">Call${who}</a>` +
+        ` &nbsp;|&nbsp; ` +
+        `<a href="sms:${esc(entry.e164)}">Text${who}</a>`
+    );
   }
   return lines;
 }
@@ -376,26 +403,28 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   const endCell = parseTime(cell(row, idx, "End Time")).hhmm;
 
   const phone = cell(row, idx, "Phone");
-  const lines = [`Prospect: ${name}`, ...contactLines(phone)];
+  const lines = [`Prospect: ${esc(name)}`, ...contactLines(phone)];
   const add = (label: string, value: string) => {
-    if (value && !["x", "nil"].includes(value.toLowerCase())) lines.push(`${label}: ${value}`);
+    if (value && !["x", "nil"].includes(value.toLowerCase())) {
+      lines.push(`${label}: ${esc(value)}`);
+    }
   };
   add("Occupation", cell(row, idx, "Career"));
   add("Lease type", cell(row, idx, "Lease Type"));
   add("Source", cell(row, idx, "Source"));
   add("Status", cell(row, idx, "Status"));
   add("Tenancy", cell(row, idx, "Tenancy?"));
-  lines.push(`Host: ${guides.join(" & ") || "unassigned"}`);
+  lines.push(`Host: ${esc(guides.join(" & ") || "unassigned")}`);
   lines.push(`Format: ${virtual ? "Virtual tour" : "In person"}`);
-  lines.push(`Address: ${fullAddress(street)}`);
-  if (timeNote) lines.push(`Time note: ${timeNote}`);
-  if (notes) lines.push(`\nNotes: ${notes}`);
+  lines.push(`Address: ${esc(fullAddress(street))}`);
+  if (timeNote) lines.push(`Time note: ${esc(timeNote)}`);
+  if (notes) lines.push(`<br>Notes: ${esc(notes)}`);
 
   return {
     key: tourKey(name, street, date),
     title,
     location: fullAddress(street),
-    description: lines.join("\n"),
+    description: lines.join("<br>"),
     guests: [...guestSet],
     ...(hhmm
       ? { start: `${date} ${hhmm}:00`, end: `${date} ${endCell ?? addMinutes(hhmm, DEFAULT_MINUTES)}:00` }
