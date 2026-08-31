@@ -265,6 +265,62 @@ function guideNames(raw: string): string[] {
  */
 const VIRTUAL = /\b(virtual|zoom|facetime|video tour)\b/i;
 
+export type PhoneEntry = { display: string; e164: string | null; label: string | null };
+
+/**
+ * The numbers in one Phone cell, each with a dialable form.
+ *
+ * The column holds a dozen shapes — "(425) 765-2455", "5415257433",
+ * "+86 186 0026 2057", two numbers split by a slash, and a few with the
+ * person's name in brackets after them. All of that is somebody's real contact
+ * detail, so the original text is always kept; the normalised form is only
+ * used for the link.
+ *
+ * A number that can't be made sense of gets no link rather than a broken one:
+ * a tel: that dials nothing is worse than a number you have to copy.
+ */
+export function phoneEntries(raw: string): PhoneEntry[] {
+  return raw
+    .split(/[/\n;]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      // A trailing "(Wendy)" names whose number it is; "(425)" is an area code.
+      const named = part.match(/\(([A-Za-z][^)]*)\)\s*$/);
+      const label = named ? named[1]!.trim() : null;
+      const display = part;
+      const body = named ? part.slice(0, named.index).trim() : part;
+
+      const plus = body.trim().startsWith("+");
+      const digits = body.replace(/\D/g, "");
+      let e164: string | null = null;
+      if (plus && digits.length >= 8) e164 = `+${digits}`;
+      else if (digits.length === 10) e164 = `+1${digits}`;
+      else if (digits.length === 11 && digits.startsWith("1")) e164 = `+${digits}`;
+      return { display, e164, label };
+    });
+}
+
+/**
+ * The contact lines for an event description: the number as written, then a
+ * tel: and an sms: for it, each said in words so it is obvious on a phone
+ * which one rings and which one opens a message.
+ */
+export function contactLines(raw: string): string[] {
+  const phone = raw.trim();
+  if (!phone) return ["Phone: (none on file)"];
+
+  const entries = phoneEntries(phone);
+  const lines = [`Phone: ${phone}`];
+  for (const entry of entries) {
+    if (!entry.e164) continue;
+    const who = entry.label ? ` ${entry.label}` : entries.length > 1 ? ` ${entry.display}` : "";
+    lines.push(`Call${who}: tel:${entry.e164}`);
+    lines.push(`Text${who}: sms:${entry.e164}`);
+  }
+  return lines;
+}
+
 /**
  * A stable identity for a tour: who, where, which day. Deliberately not the
  * time — a tour moved by an hour is the same tour, and re-keying on time would
@@ -320,10 +376,7 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   const endCell = parseTime(cell(row, idx, "End Time")).hhmm;
 
   const phone = cell(row, idx, "Phone");
-  const lines = [
-    `Prospect: ${name}`,
-    `Phone: ${phone || "(none on file)"}`,
-  ];
+  const lines = [`Prospect: ${name}`, ...contactLines(phone)];
   const add = (label: string, value: string) => {
     if (value && !["x", "nil"].includes(value.toLowerCase())) lines.push(`${label}: ${value}`);
   };

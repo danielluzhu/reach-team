@@ -564,7 +564,18 @@ is read in a crowded day view, where the number is the whole of what tells one
 property from another, and it sidesteps how the sheet capitalises a street.
 The location field and the description keep the full postal address.
 
-The description carries the prospect's phone and the basics off the row —
+The description carries the prospect's phone twice over — once as `tel:` and
+once as `sms:`, each labelled Call or Text, so a guide standing outside a
+building taps the right one instead of copying digits:
+
+    Phone: 4255757178 (Wendy)
+    Call Wendy: tel:+14255757178
+    Text Wendy: sms:+14255757178
+
+The number as written is always kept alongside, because that is what somebody
+recorded. A cell holding two numbers gets a pair of links each; a number that
+can't be made sense of gets none, since a `tel:` that dials nothing is worse
+than a number you have to copy. Then the basics off the row —
 occupation, lease type, source, status, host, in-person or virtual, the full
 address, and the notes. Tours are **30 minutes** unless the row fills in End
 Time, and always in the property's own zone, since every property is in one city.
