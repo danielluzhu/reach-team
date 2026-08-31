@@ -19,7 +19,7 @@ reachable signed out are the login and sign-up forms.
 | -------------- | -------------------------------------------------------- |
 | `/login`       | Sign-in form                                              |
 | `/register`    | Sign-up, for approved usernames only                      |
-| `/`            | Tenants, Access &amp; Homes — the door-code table, then the Home/Unit doc |
+| `/`            | Home Access — the door-code table, then the Home/Unit doc |
 | `/doc`         | Redirects to `/#homes` (the two pages were merged)        |
 | `/workflow`    | Prospect Management Workflow, same treatment               |
 | `/sheets/:id`  | One editable sheet — `tours`, `leases`, `vendors`          |
@@ -326,8 +326,8 @@ records; the two are not synchronised either.
 `/sheets/:id` is a spreadsheet editor over the `sheets` table (one DB row per
 sheet, with columns and rows stored as JSON so the grid stays free-form).
 
-**Each sheet is a top-level tab of its own**, alongside Tenants, Access &amp;
-Homes — `/sheets/tours`, `/sheets/leases`, `/sheets/vendors`. They used to be
+**Each sheet is a top-level tab of its own**, alongside Home Access —
+`/sheets/tours`, `/sheets/leases`, `/sheets/vendors`. They used to be
 sub-tabs inside a single "Tours & Leases" page; that in-page tab strip is gone,
 and bare `/sheets` redirects to the first sheet so old links still work.
 

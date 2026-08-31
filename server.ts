@@ -56,7 +56,7 @@ import {
 
 // Home / Unit Info had a tab of its own until the two were merged; /doc now
 // redirects into the homes half of this page.
-const LEADING_NAV_LINKS: [string, string][] = [["/", "Tenants, Access & Homes"]];
+const LEADING_NAV_LINKS: [string, string][] = [["/", "Home Access"]];
 
 /**
  * The sheets sit between these and the access page, which is what puts Tours &
@@ -999,7 +999,7 @@ async function renderPage(user: User): Promise<string> {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tenants, Access &amp; Homes</title>
+  <title>Home Access</title>
   ${FAVICON_LINK}
   <style>
 ${NAV_CSS}
@@ -1183,7 +1183,7 @@ ${DOC_CSS}
 <body>
   ${renderNav("/", user)}
   <div class="page">
-  <h1>Tenants, Access &amp; Homes</h1>
+  <h1>Home Access</h1>
   <p class="lede">Door codes and who is in each unit, then the details of every home &mdash;
     ${homes.length} ${homes.length === 1 ? "property" : "properties"}, the application and the FAQ.</p>
 
