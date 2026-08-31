@@ -33,6 +33,18 @@ function doPost(e) {
     if (!e || !e.postData || !e.postData.contents) return reply({ error: 'empty request' });
     var body = JSON.parse(e.postData.contents);
 
+    // This file is public — it lives in the repository — so the placeholder is
+    // a known string. Refusing outright while it is still in place means a
+    // deployment made by pasting this file is closed rather than open to
+    // anyone who has the URL. Re-pasting the file over a working deployment is
+    // exactly how that happens, so it must fail loudly, not silently work.
+    if (SECRET === 'REPLACE_ME' || SECRET.length < 16) {
+      return reply({
+        error: 'this deployment still has the placeholder SECRET — set a real one ' +
+               '(openssl rand -hex 32) and re-deploy as a New version',
+      });
+    }
+
     // Constant-time-ish compare. Apps Script has no timing-safe helper, and the
     // secret is long and random, so a length check plus a full-string compare
     // is the practical limit here.
