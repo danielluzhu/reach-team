@@ -605,7 +605,12 @@ export function authenticate(req: Request): User | Response {
   const user = token ? userForToken(token) : null;
   if (user) return user;
 
-  if (url.pathname.startsWith("/api/")) {
+  // Any path with an /api/ segment in it, not only one that starts with it:
+  // the checklist form is served under /checklist, so its calls home go to
+  // /checklist/api/... A redirect to the sign-in page answers those with 200
+  // and a page of HTML, which a fetch() reads as success — and the form would
+  // then tell somebody mid-walkthrough that their answers had been saved.
+  if (/(^|\/)api\//.test(url.pathname)) {
     // Says whether the browser sent no cookie at all, or one the database
     // doesn't recognise — a very different diagnosis.
     console.warn(

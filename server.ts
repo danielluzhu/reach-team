@@ -29,6 +29,8 @@ import {
 import {
   addInspectionNote,
   deleteInspectionNote,
+  isChecklistPath,
+  proxyChecklistApp,
   renderInspection,
   renderInspectionsList,
   renderNote,
@@ -1578,6 +1580,19 @@ const server = Bun.serve({
         user
       );
     }
+    /**
+     * The checklist form, served through this app's sign-in.
+     *
+     * The form runs on :3100, which answers only to this machine — that is
+     * what makes it safe to leave without a sign-in of its own, and it is also
+     * why nobody in the office can open it in a browser. The Duplicate link on
+     * a signed report comes here instead, and everything the form then asks
+     * for goes through the same door. See proxyChecklistApp.
+     */
+    if (isChecklistPath(url.pathname)) {
+      return await proxyChecklistApp(req, url);
+    }
+
     // The signed move-in checklists, read out of the checklist app's own
     // database (see inspections.ts). Read-only, and everyone signed in can see
     // them: a walkthrough is a record of the property, not something only Dan

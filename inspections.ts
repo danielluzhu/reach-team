@@ -30,22 +30,86 @@ const UPLOAD_DIR = process.env.CHECKLIST_UPLOAD_DIR ?? `${CHECKLIST_DIR}/uploads
 const CHECKLIST_URL = process.env.CHECKLIST_URL ?? "http://127.0.0.1:3100";
 
 /**
- * Where a person opens the checklist form, which needn't be where this server
- * rebuilds a PDF from: the rebuild is a call from this process, usually over
- * localhost, while the "duplicate" link below is followed by somebody's
- * browser, which may be anywhere. Set `CHECKLIST_PUBLIC_URL` to the address
- * tenants are sent when the two differ; otherwise they are the same thing.
+ * Where the checklist form is served from *this* app.
+ *
+ * The form itself has to run on :3100 — that is where uploads, drafts and
+ * signing live — but :3100 is bound to localhost, so a browser in the office
+ * can't open it. Anything on it that the office needs therefore comes through
+ * here, the way the PDFs and the photos already do. This is the prefix that
+ * gets stripped before the request is passed on.
  */
-const CHECKLIST_PUBLIC_URL = (process.env.CHECKLIST_PUBLIC_URL ?? CHECKLIST_URL).replace(/\/+$/, "");
+const CHECKLIST_PREFIX = "/checklist";
 
 /**
  * The link that starts a new checklist as a copy of this one — same property,
  * same agent, same rooms with what was recorded about each of them, same
- * photos, and the tenant's name there to be changed. It goes to the checklist
- * app because that is where a checklist is filled in and signed; nothing here
- * writes to `checklists.db`.
+ * photos, and the tenant's name there to be changed. It is a path on this app,
+ * not an address on :3100: the person following it is signed in here.
+ *
+ * The checklist is still filled in and signed by the app on the other end.
+ * Nothing in this app writes to `checklists.db`.
  */
-const copyUrl = (id: string) => `${CHECKLIST_PUBLIC_URL}/?copy=${id}`;
+const copyUrl = (id: string) => `${CHECKLIST_PREFIX}/?copy=${id}`;
+
+/** Requests this app hands straight to the checklist app. */
+export const isChecklistPath = (pathname: string) =>
+  pathname === CHECKLIST_PREFIX || pathname.startsWith(`${CHECKLIST_PREFIX}/`);
+
+/**
+ * The checklist form, served through the sign-in.
+ *
+ * A move-out walkthrough starts from a signed report — the Duplicate link on
+ * every inspection — and it is walked by somebody from the office, on the
+ * address they reach this app at. The form can't be handed to them on :3100:
+ * that port answers only to this machine, which is exactly what makes it safe
+ * to leave without a sign-in of its own.
+ *
+ * So everything under /checklist is passed on with the prefix taken off, and
+ * the checklist app is told which prefix that was, so the page it serves asks
+ * for /checklist/api/... rather than /api/... The request has already been
+ * through this app's sign-in by the time it gets here; nothing about the
+ * checklist app's own routes changes.
+ *
+ * The body is streamed rather than read: a walkthrough uploads photos and the
+ * occasional video, and buffering a 200MB file here to send it on again would
+ * cost this app the memory for no purpose.
+ */
+export async function proxyChecklistApp(req: Request, url: URL): Promise<Response> {
+  const path = url.pathname.slice(CHECKLIST_PREFIX.length) || "/";
+  const headers = new Headers();
+  // Only what the checklist app reads. The session cookie in particular stays
+  // here: it is this app's, and :3100 has no business being handed it.
+  for (const name of ["content-type", "content-length", "accept", "user-agent"]) {
+    const value = req.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.set("X-Forwarded-Prefix", CHECKLIST_PREFIX);
+
+  const body = req.method === "GET" || req.method === "HEAD" ? undefined : req.body;
+  try {
+    const res = await fetch(`${CHECKLIST_URL}${path}${url.search}`, {
+      method: req.method,
+      headers,
+      body,
+      redirect: "manual",
+      // Sending a body that is still arriving.
+      ...(body ? { duplex: "half" } : {}),
+    } as RequestInit);
+    const out = new Headers(res.headers);
+    // Whatever the checklist app says about caching, nothing that comes
+    // through here — a form with a tenant's answers in it, a photo of somebody's
+    // flat — belongs in a shared cache.
+    out.set("Cache-Control", "no-store, private");
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
+  } catch (err) {
+    console.warn(`Could not reach the checklist app at ${CHECKLIST_URL}.`, err);
+    return new Response(
+      "The checklist app isn't answering, so a checklist can't be filled in right now. " +
+        "It runs as pcc.service on :3100; the reports already signed are unaffected.",
+      { status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store, private" } }
+    );
+  }
+}
 
 /** The properties are all in Seattle, so that's where a signing time is read. */
 const TIME_ZONE = process.env.CHECKLIST_TZ ?? "America/Los_Angeles";

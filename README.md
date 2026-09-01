@@ -950,9 +950,10 @@ asked for it — it rebuilds one from the stored answers.
 ### Duplicating one for the move-out
 
 Every report carries a **Duplicate** link — in the list beside its PDF, and on
-the report itself as *Duplicate for the move-out*. It opens the checklist app
-with this report copied in: the same property, the same agent, every room with
-the condition and note each item carried, the general notes, and the photos.
+the report itself as *Duplicate for the move-out*. It opens the checklist form
+at `/checklist/?copy=<id>`, served through this app's sign-in, with the report
+copied in: the same property, the same agent, every room with the condition and
+note each item carried, the general notes, and the photos.
 The tenant's name comes with it and is the first field focused, because when the
 next walkthrough is a different tenancy that is the thing to change.
 
@@ -966,10 +967,31 @@ checklist app, which is where a checklist is filled in and signed. The signed
 report it was copied from is untouched, and the copy only becomes a record when
 somebody signs it.
 
-That link is followed by a **browser**, not by this server, so it needs an
-address a person can actually open. It uses `CHECKLIST_URL`, which is also the
-address this app calls to rebuild a missing PDF — usually localhost. Where the
-two differ, set `CHECKLIST_PUBLIC_URL` to the address tenants are sent.
+#### Why the form is served through this app
+
+The link goes to `/checklist/`, on this app, not to :3100 — and that is the
+whole trick. The checklist app binds to `127.0.0.1`, which is what makes it safe
+to run without a sign-in of its own, and is also why a browser in the office
+gets **“127.0.0.1 refused to connect”** if it is pointed there.
+
+So everything under `/checklist` is passed on to the checklist app with the
+prefix taken off (`proxyChecklistApp` in `inspections.ts`), after this app's
+sign-in has already run. The checklist app is told which prefix was stripped in
+`X-Forwarded-Prefix`, and stamps it into the page, so the form asks for
+`/checklist/api/…` rather than `/api/…` and every upload, draft save, signature
+and PDF comes back through the same door. Bodies are streamed rather than
+buffered: a walkthrough uploads photos and the occasional video.
+
+The session cookie is **not** passed on — it belongs to this app, and :3100 has
+no business being handed it. Nothing else about the checklist app changes: a
+tenant opening it directly on the property sends no prefix header and gets the
+form it has always served.
+
+One consequence worth knowing: a request to `/checklist/api/…` without a session
+is answered `401`, not a redirect to the sign-in page. A redirect answers a
+`fetch()` with 200 and a page of HTML, and the form would read that as success —
+telling somebody mid-walkthrough that their answers had been saved when they
+hadn't. `authenticate()` treats any path with an `/api/` segment this way.
 
 ### Comments added after signing
 
@@ -1005,8 +1027,9 @@ stored as it was at the time, so renaming an account doesn't rewrite an old
 addendum.
 
 Override the paths with `CHECKLIST_DIR` (or `CHECKLIST_DB`, `CHECKLIST_PDF_DIR`,
-`CHECKLIST_UPLOAD_DIR` individually), the rebuild address with `CHECKLIST_URL`
-and the address the Duplicate links point at with `CHECKLIST_PUBLIC_URL`,
+`CHECKLIST_UPLOAD_DIR` individually), the address of the checklist app — used
+both to rebuild a missing PDF and to serve the form under `/checklist` — with
+`CHECKLIST_URL`,
 and the timezone the signing times are read in with `CHECKLIST_TZ` — it defaults
 to `America/Los_Angeles`, because the properties are here.
 
