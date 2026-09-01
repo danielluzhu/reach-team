@@ -1227,6 +1227,17 @@ export const PAGE_CSS = `
     dialog .choice span { display: block; margin-top: 0.15rem; color: var(--muted); font-weight: 400;
       font-size: 0.8rem; }
 
+    /* Who a link is for. Almost always one of the two people already on the
+       report, so they are a tap rather than something to type out again. */
+    .who-for { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0 0 0.7rem; }
+    .who-for button { display: flex; align-items: baseline; gap: 0.35rem; background: #fff;
+      border: 1px solid #d1d5db; border-radius: 999px; padding: 0.28rem 0.7rem;
+      font: 600 0.78rem system-ui, sans-serif; color: #374151; cursor: pointer; }
+    .who-for button span { font-weight: 400; color: var(--muted); }
+    .who-for button:hover { border-color: #9ca3af; color: var(--ink); }
+    .who-for button.on { background: #1f2937; border-color: #1f2937; color: #fff; }
+    .who-for button.on span { color: #d1d5db; }
+
     /* Links sent out so somebody who isn't here can sign it themselves. */
     .sign-link { border-top: 1px solid #f1f2f4; padding: 0.7rem 0; }
     .sign-link .who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin: 0; }
@@ -1282,7 +1293,7 @@ const LIST_CSS = `
     /* Opened from a row rather than being a page of its own: sending a link is
        a thirty-second job, and it shouldn't cost the place in the list somebody
        scrolled to. The furniture is in PAGE_CSS, shared with the other one. */
-    #remote-sign .links:not(:empty) { margin-bottom: 0.6rem; margin-top: 0; }
+    #remote-sign .links:not(:empty) { margin-top: 0.9rem; }
 
     .flag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.75rem;
       font-weight: 600; margin: 0 0.25rem 0.2rem 0; white-space: nowrap; }
@@ -1896,6 +1907,19 @@ const SIGNATURES_JS = `
     linkError.hidden = !message;
   }
 
+  var whoFor = card.querySelector(".who-for");
+  if (whoFor) {
+    whoFor.addEventListener("click", function (e) {
+      var pick = e.target.closest("button");
+      if (!pick) return;
+      Array.prototype.forEach.call(whoFor.children, function (b) { b.classList.remove("on"); });
+      pick.classList.add("on");
+      linkName.value = pick.dataset.fill || "";
+      linkRole.value = pick.dataset.role || "";
+      if (!pick.dataset.fill) linkName.focus();
+    });
+  }
+
   makeLink.addEventListener("click", function () {
     var name = linkName.value.trim();
     var role = linkRole.value.trim();
@@ -2001,6 +2025,7 @@ const REMOTE_SIGN_JS = `
   var make = document.getElementById("rs-make");
   var error = document.getElementById("rs-error");
   var inPerson = document.getElementById("rs-in-person");
+  var who = document.getElementById("rs-who");
   var current = null;
 
   function problem(message) {
@@ -2022,19 +2047,51 @@ const REMOTE_SIGN_JS = `
       .catch(function () { links.innerHTML = ""; });
   }
 
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  /* The two people already on the report are who a link is for nearly every
+     time — the agent who couldn't be at the walkthrough, or the tenant who
+     was never asked to sign it. Neither should have to be typed out. */
+  function choices(from) {
+    var people = [];
+    if (from.dataset.tenant) people.push({ label: "Tenant", who: from.dataset.tenant, role: "Tenant" });
+    if (from.dataset.agent) {
+      people.push({ label: "Agent", who: from.dataset.agent, role: "Agent / landlord representative" });
+    }
+    people.push({ label: "Someone else", who: "", role: "" });
+    who.innerHTML = people.map(function (p) {
+      return '<button type="button" data-fill="' + esc(p.who) + '" data-role="' + esc(p.role) + '">' +
+        esc(p.label) + (p.who ? " <span>" + esc(p.who) + "</span>" : "") + "</button>";
+    }).join("");
+    // Start on whoever is likelier to be missing a signature: the agent, when
+    // one was named and didn't sign at the walkthrough.
+    var start = who.querySelector(from.dataset.agent ? "button:nth-child(2)" : "button");
+    if (start) start.click();
+  }
+
+  who.addEventListener("click", function (e) {
+    var pick = e.target.closest("button");
+    if (!pick) return;
+    Array.prototype.forEach.call(who.children, function (b) { b.classList.remove("on"); });
+    pick.classList.add("on");
+    name.value = pick.dataset.fill || "";
+    role.value = pick.dataset.role || "";
+    if (!pick.dataset.fill) name.focus();
+  });
+
   document.addEventListener("click", function (e) {
     var open = e.target.closest && e.target.closest('[data-act="remote-sign"]');
     if (!open) return;
     current = open.dataset.id;
     what.textContent = open.dataset.address + " \\u2014 " + open.dataset.tenant;
-    // The agent named on the checklist is who this is for nine times in ten.
-    name.value = open.dataset.agent || "";
-    role.value = open.dataset.agent ? "Agent / landlord representative" : "";
+    choices(open);
     problem("");
     inPerson.setAttribute("href", "/inspections/" + current + "#sign");
     load();
     dialog.showModal();
-    setTimeout(function () { name.focus(); name.select(); }, 30);
   });
 
   make.addEventListener("click", function () {
@@ -2456,7 +2513,7 @@ export function renderInspectionsList(nav: string, navCss: string): string {
       works once, and expires in a fortnight &mdash; and it can be withdrawn until it is used.
       Whoever holds it can read this inspection, so send it to the person it names and nobody else.</p>
 
-    <div id="rs-links" class="links"></div>
+    <div class="who-for" id="rs-who"></div>
 
     <div class="fields">
       <div class="field">
@@ -2477,6 +2534,8 @@ export function renderInspectionsList(nav: string, navCss: string): string {
       <span class="hint">Nothing is sent for you &mdash; copy it into your own email or text.</span>
       <span class="err" id="rs-error" hidden></span>
     </div>
+    <div id="rs-links" class="links"></div>
+
     <p class="also">Signing in person instead? <a href="#" id="rs-in-person">Open the report</a> and
       sign on this device.</p>
   </dialog>
@@ -2715,11 +2774,22 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
         report and one box to sign it, works once, and expires in a fortnight &mdash; and it can be
         withdrawn from here until it is used. Whoever holds it can read this inspection, so send it
         to the person it names and nobody else.</p>
+      <div class="who-for">
+        <button type="button" data-fill="${escapeAttr(c.name)}" data-role="Tenant">
+          Tenant <span>${escapeHtml(c.name)}</span></button>
+        ${
+          c.agentName
+            ? `<button type="button" data-fill="${escapeAttr(c.agentName)}"
+          data-role="${escapeAttr(SIGNER_ROLES[0])}">Agent <span>${escapeHtml(c.agentName)}</span></button>`
+            : ""
+        }
+        <button type="button" data-fill="" data-role="">Someone else</button>
+      </div>
       <div class="fields">
         <div class="field">
           <label for="link-name">Who is it for</label>
           <input id="link-name" type="text" maxlength="120" autocomplete="off"
-            placeholder="${escapeAttr(c.agentName || "Their full name")}" />
+            placeholder="Their full name" />
         </div>
         <div class="field">
           <label for="link-role">They will sign as</label>

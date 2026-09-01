@@ -1092,10 +1092,15 @@ decides what they are signing as, they don't.
 **Remote signing** sits on every row of `/inspections`, next to the PDF, and
 opens a dialog rather than another page: chasing signatures across a dozen
 properties shouldn't cost the place in the list somebody scrolled to. It names
-the property, pre-fills the agent from the checklist (who it is for nine times
-in ten), lists what is **already out** for that inspection — because the question
-after "send them a link" is always "did I already?" — and puts the new address
-straight on the clipboard. Links can be withdrawn from there too, and there is a
+the property, offers the two people already on the report as a tap — **Tenant**
+or **Agent**, with their names on the chips, plus *Someone else* for anybody
+outside those two — lists what is **already out** for that inspection, because
+the question after "send them a link" is always "did I already?", and puts the
+new address straight on the clipboard.
+
+It opens on the agent, who is the likelier of the two to be missing a signature.
+The tenant is one tap: a checklist walked and signed by the office, with the
+tenant not there, is exactly the case this is for. Links can be withdrawn from there too, and there is a
 line out to signing in person on the device in your hand. The same thing lives
 on the report itself, under **Send a link to someone who isn't here**.
 
