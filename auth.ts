@@ -571,7 +571,7 @@ export const trustedOrigins = [...TRUSTED_ORIGINS];
  * common cases; this closes the gap for anything that sends an Origin we don't
  * recognise.
  */
-function originMismatch(req: Request): boolean {
+export function originMismatch(req: Request): boolean {
   if (req.method === "GET" || req.method === "HEAD") return false;
   const origin = req.headers.get("Origin");
   if (!origin) return false; // non-browser clients (curl) send none

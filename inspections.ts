@@ -13,7 +13,7 @@
 import { Database } from "bun:sqlite";
 import { PDFDocument } from "pdf-lib";
 import { appendAddendum, type AddendumNote } from "./addendum";
-import { canEditTenants, displayName, FAVICON_LINK, type User } from "./auth";
+import { canEditTenants, displayName, FAVICON_LINK, trustedOrigins, type User } from "./auth";
 import { db } from "./db";
 
 /** All three live side by side under the checklist app's directory. */
@@ -337,8 +337,11 @@ export type LaterSignature = {
   /** The PNG the canvas produced, as a data URL. */
   signature: string;
   signedAt: string;
+  /** The account that captured it, or that sent the link it came in through. */
   addedBy: string;
   addedByName: string | null;
+  /** Set when it was signed remotely, through a link the office sent out. */
+  linkId: number | null;
 };
 
 /** Room for what somebody signing a week later wants to put on the record. */
@@ -362,12 +365,12 @@ export const SIGNER_ROLES = [
 
 const insertSignature = db.query(
   `INSERT INTO inspection_signatures
-     (checklist_id, signer_name, role, remark, signature, signed_at, added_by, added_by_name)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-   RETURNING id, signer_name, role, remark, signature, signed_at, added_by, added_by_name`
+     (checklist_id, signer_name, role, remark, signature, signed_at, added_by, added_by_name, link_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+   RETURNING id, signer_name, role, remark, signature, signed_at, added_by, added_by_name, link_id`
 );
 const listSignatures = db.query(
-  `SELECT id, signer_name, role, remark, signature, signed_at, added_by, added_by_name
+  `SELECT id, signer_name, role, remark, signature, signed_at, added_by, added_by_name, link_id
    FROM inspection_signatures WHERE checklist_id = ? AND deleted_at IS NULL ORDER BY id`
 );
 // Names as well as counts: "who signed this afterwards" is a thing somebody
@@ -385,7 +388,7 @@ const softDeleteSignature = db.query(
 
 type SignatureRow = {
   id: number; signer_name: string; role: string; remark: string; signature: string;
-  signed_at: string; added_by: string; added_by_name: string | null;
+  signed_at: string; added_by: string; added_by_name: string | null; link_id: number | null;
 };
 
 const toSignature = (r: SignatureRow): LaterSignature => ({
@@ -397,6 +400,7 @@ const toSignature = (r: SignatureRow): LaterSignature => ({
   signedAt: r.signed_at,
   addedBy: r.added_by,
   addedByName: r.added_by_name,
+  linkId: r.link_id,
 });
 
 export function inspectionSignatures(checklistId: string): LaterSignature[] {
@@ -465,7 +469,8 @@ export function addInspectionSignature(
     signature,
     new Date().toISOString(),
     user.username,
-    displayName(user)
+    displayName(user),
+    null
   ) as SignatureRow;
   console.log(
     `[${new Date().toISOString()}] inspection ${checklistId.slice(0, 8)} signed by ${name} ` +
@@ -499,6 +504,253 @@ export function deleteInspectionSignature(
       `removed by ${user.username}`
   );
   return { ok: true };
+}
+
+/* ------------------------------------------------------- links out to sign */
+
+/**
+ * A link handed to somebody outside the office so they can sign an inspection
+ * themselves.
+ *
+ * The people whose signatures are missing are exactly the people who have no
+ * account here: the tenant who has moved out, the landlord, the contractor who
+ * saw the damage. Making them one to collect a signature is worse than the
+ * problem it solves, and "print it, sign it, scan it back" is how a
+ * countersignature never arrives at all.
+ *
+ * So the token is the authority, the same bargain as the checklist PDF links:
+ * unguessable, and the credential itself. Each one is kept narrow — one
+ * inspection, one signature, an expiry, and revocable from the report at any
+ * time.
+ */
+export type SignLink = {
+  id: number;
+  token: string;
+  signerName: string;
+  role: string;
+  createdAt: string;
+  createdBy: string;
+  createdByName: string | null;
+  expiresAt: string;
+  usedAt: string | null;
+  revokedAt: string | null;
+  /** What the report shows about it now, which is the only thing the page needs. */
+  state: "waiting" | "signed" | "expired" | "revoked";
+};
+
+/** Long enough that a walkthrough's countersignature isn't chased twice. */
+const LINK_DAYS = 14;
+
+const insertLink = db.query(
+  `INSERT INTO inspection_sign_links
+     (token, checklist_id, signer_name, role, created_at, created_by, created_by_name, expires_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   RETURNING id, token, signer_name, role, created_at, created_by, created_by_name,
+             expires_at, used_at, revoked_at`
+);
+const listLinks = db.query(
+  `SELECT id, token, signer_name, role, created_at, created_by, created_by_name,
+          expires_at, used_at, revoked_at
+   FROM inspection_sign_links WHERE checklist_id = ? ORDER BY id`
+);
+const readLinkByToken = db.query(
+  `SELECT id, token, checklist_id, signer_name, role, created_at, created_by, created_by_name,
+          expires_at, used_at, revoked_at
+   FROM inspection_sign_links WHERE token = ?`
+);
+const readLinkById = db.query(
+  `SELECT id, checklist_id, created_by, used_at, revoked_at FROM inspection_sign_links WHERE id = ?`
+);
+/* Claiming and recording are two steps on purpose: the claim is the atomic
+   one, so two taps on a slow phone can't produce two signatures. */
+const claimLink = db.query(
+  `UPDATE inspection_sign_links SET used_at = ?
+   WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL`
+);
+const attachSignature = db.query(
+  `UPDATE inspection_sign_links SET signature_id = ? WHERE id = ?`
+);
+const revokeLink = db.query(
+  `UPDATE inspection_sign_links SET revoked_at = ?, revoked_by = ?
+   WHERE id = ? AND revoked_at IS NULL AND used_at IS NULL`
+);
+
+type LinkRow = {
+  id: number; token: string; signer_name: string; role: string; created_at: string;
+  created_by: string; created_by_name: string | null; expires_at: string;
+  used_at: string | null; revoked_at: string | null;
+};
+
+const toLink = (r: LinkRow): SignLink => ({
+  id: r.id,
+  token: r.token,
+  signerName: r.signer_name,
+  role: r.role,
+  createdAt: r.created_at,
+  createdBy: r.created_by,
+  createdByName: r.created_by_name,
+  expiresAt: r.expires_at,
+  usedAt: r.used_at,
+  revokedAt: r.revoked_at,
+  state: r.revoked_at
+    ? "revoked"
+    : r.used_at
+      ? "signed"
+      : new Date(r.expires_at).getTime() < Date.now()
+        ? "expired"
+        : "waiting",
+});
+
+export function inspectionSignLinks(checklistId: string): SignLink[] {
+  return (listLinks.all(checklistId) as LinkRow[]).map(toLink);
+}
+
+/**
+ * Where a link points. Built from the address this app is actually reached on
+ * rather than from the request, because the request that creates a link often
+ * arrives over localhost or through a proxy — and a link to 127.0.0.1 is the
+ * kind of thing somebody sends to a tenant once.
+ */
+export function signLinkUrl(token: string, origin?: string): string {
+  const base = (trustedOrigins[0] ?? origin ?? "").replace(/\/+$/, "");
+  return `${base}/sign/${token}`;
+}
+
+/**
+ * A new link. The token is 32 random bytes: it is the whole of the security
+ * here, so it is not a counter, a name or anything a person could arrive at by
+ * trying.
+ */
+export function createSignLink(
+  checklistId: string,
+  user: User,
+  input: { name?: unknown; role?: unknown }
+): { link: SignLink } | { error: string; status: number } {
+  if (!readInspection(checklistId)) {
+    return { error: "That inspection no longer exists — reload the page.", status: 404 };
+  }
+  const name = String(input?.name ?? "").trim().slice(0, 120);
+  const role = String(input?.role ?? "").trim().slice(0, 80);
+  if (!name) return { error: "Who is the link for? Their name goes on the signature.", status: 400 };
+  if (!role) return { error: "Say what they will be signing as.", status: 400 };
+
+  const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+  const now = new Date();
+  const expires = new Date(now.getTime() + LINK_DAYS * 24 * 60 * 60 * 1000);
+  const row = insertLink.get(
+    token, checklistId, name, role, now.toISOString(),
+    user.username, displayName(user), expires.toISOString()
+  ) as LinkRow;
+  // The token is deliberately not logged: it is a credential, and this log is
+  // read by more people than the link was sent to.
+  console.log(
+    `[${now.toISOString()}] inspection ${checklistId.slice(0, 8)} sign link ${row.id} created by ` +
+      `${user.username} for ${name} (${role}), expires ${expires.toISOString().slice(0, 10)}`
+  );
+  return { link: toLink(row) };
+}
+
+/** Withdraws a link that hasn't been used. */
+export function revokeSignLink(
+  checklistId: string,
+  linkId: number,
+  user: User
+): { ok: true } | { error: string; status: number } {
+  const row = readLinkById.get(linkId) as
+    | { id: number; checklist_id: string; created_by: string; used_at: string | null; revoked_at: string | null }
+    | undefined;
+  if (!row || row.checklist_id !== checklistId) {
+    return { error: "That link is already gone — reload the page.", status: 404 };
+  }
+  if (row.used_at) return { error: "That link has already been signed; it can't be withdrawn.", status: 409 };
+  if (row.revoked_at) return { error: "That link was already withdrawn.", status: 404 };
+  if (row.created_by !== user.username && !canEditTenants(user)) {
+    return { error: "You can only withdraw a link you sent.", status: 403 };
+  }
+  revokeLink.run(new Date().toISOString(), user.username, linkId);
+  console.log(
+    `[${new Date().toISOString()}] inspection ${checklistId.slice(0, 8)} sign link ${linkId} withdrawn by ${user.username}`
+  );
+  return { ok: true };
+}
+
+/** The link behind a token, with why it can't be used where that's the case. */
+function openLink(token: string):
+  | { link: SignLink; inspection: Inspection }
+  | { refusal: "unknown" | "signed" | "expired" | "revoked" | "gone" } {
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return { refusal: "unknown" };
+  const row = readLinkByToken.get(token) as (LinkRow & { checklist_id: string }) | undefined;
+  if (!row) return { refusal: "unknown" };
+  const link = toLink(row);
+  if (link.state !== "waiting") return { refusal: link.state };
+  const inspection = readInspection(row.checklist_id);
+  if (!inspection) return { refusal: "gone" };
+  return { link, inspection };
+}
+
+/**
+ * What a link's holder sees, or why they see nothing: everything the page
+ * needs, so the routing does no reasoning of its own.
+ */
+export type SignInvitation =
+  | { link: SignLink; inspection: Inspection }
+  | { refusal: "unknown" | "signed" | "expired" | "revoked" | "gone" };
+
+export const readSignInvitation = (token: string): SignInvitation => openLink(token);
+
+/**
+ * A signature made by whoever holds the link.
+ *
+ * The name is theirs to correct — the office types other people's names wrong
+ * — but the capacity is not: the link was made to collect a particular
+ * signature, and letting the holder rewrite that would make it a different
+ * document from the one that was asked for. Both are kept: what the link was
+ * for, and what they signed as.
+ */
+export function signByLink(
+  token: string,
+  input: { name?: unknown; remark?: unknown; signature?: unknown }
+): { signature: LaterSignature } | { error: string; status: number } {
+  const opened = openLink(token);
+  if ("refusal" in opened) {
+    const said = {
+      unknown: "That link isn't valid.",
+      signed: "That link has already been signed.",
+      expired: "That link has expired.",
+      revoked: "That link was withdrawn.",
+      gone: "That inspection is no longer here.",
+    }[opened.refusal];
+    return { error: `${said} Ask the office for a new one.`, status: opened.refusal === "unknown" ? 404 : 410 };
+  }
+  const { link, inspection } = opened;
+
+  const name = String(input?.name ?? "").trim() || link.signerName;
+  const remark = String(input?.remark ?? "").trim();
+  const signature = String(input?.signature ?? "");
+  if (name.length > 120) return { error: "That name is too long.", status: 400 };
+  if (remark.length > REMARK_MAX) {
+    return { error: `A remark can be at most ${REMARK_MAX} characters.`, status: 400 };
+  }
+  if (!isSignature(signature)) return { error: "Sign in the box before saving.", status: 400 };
+  if (signature.length > SIGNATURE_MAX) return { error: "That signature is too large to store.", status: 413 };
+
+  // Claimed before it is recorded: two taps on a slow phone must not put two
+  // signatures on a report.
+  const now = new Date().toISOString();
+  if (claimLink.run(now, link.id).changes !== 1) {
+    return { error: "That link has already been signed. Ask the office for a new one.", status: 410 };
+  }
+
+  const row = insertSignature.get(
+    inspection.id, name, link.role, remark, signature, now,
+    link.createdBy, link.createdByName, link.id
+  ) as SignatureRow;
+  attachSignature.run(row.id, link.id);
+  console.log(
+    `[${now}] inspection ${inspection.id.slice(0, 8)} signed remotely by ${name} (${link.role}) ` +
+      `through link ${link.id}, sent by ${link.createdBy} (signature ${row.id})`
+  );
+  return { signature: toSignature(row) };
 }
 
 /* ------------------------------------------------------------------ counting */
@@ -896,6 +1148,27 @@ const DETAIL_CSS = `
     .add-sig button.ghost { background: #fff; color: #374151; border: 1px solid #d1d5db; }
     .add-sig button.ghost:hover { background: #f9fafb; color: var(--ink); }
     .add-sig .opt { font-weight: 400; text-transform: none; letter-spacing: 0; }
+
+    /* Links sent out so somebody who isn't here can sign it themselves. */
+    .sign-link { border-top: 1px solid #f1f2f4; padding: 0.7rem 0; }
+    .sign-link .who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin: 0; }
+    .sign-link .who { font-size: 0.9rem; font-weight: 600; }
+    .sign-link .role { font-weight: 400; color: var(--muted); font-size: 0.8rem; }
+    .sign-link .state { font-size: 0.72rem; font-weight: 600; padding: 0.05rem 0.4rem; border-radius: 999px; }
+    .sign-link .state.waiting { background: #ede9fe; color: #5b21b6; }
+    .sign-link .state.signed { background: #e3f6e5; color: #1e7d32; }
+    .sign-link .state.expired, .sign-link .state.revoked { background: #f3f4f6; color: #6b7280; }
+    .sign-link .at { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.15rem 0 0;
+      color: var(--muted); font-size: 0.78rem; }
+    .sign-link .drop { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
+      color: var(--muted); font: inherit; font-size: 0.78rem; text-decoration: underline; }
+    .sign-link .drop:hover { color: #991b1b; }
+    .sign-link .url { display: flex; gap: 0.4rem; margin-top: 0.45rem; }
+    .sign-link .url input { flex: 1 1 auto; min-width: 0; padding: 0.35rem 0.5rem; border: 1px solid #d1d5db;
+      border-radius: 6px; font: inherit; font-size: 0.78rem; color: #374151; background: #f9fafb; }
+    .sign-link .url button { flex: none; background: #fff; color: #374151; border: 1px solid #d1d5db;
+      border-radius: 6px; padding: 0.3rem 0.6rem; font: 600 0.78rem system-ui, sans-serif; cursor: pointer; }
+    .sign-link .url button:hover { border-color: #9ca3af; color: var(--ink); }
     .add-sig .hint { color: var(--muted); font-size: 0.78rem; }
     .add-sig .err { color: #991b1b; font-size: 0.8rem; }
 
@@ -1087,11 +1360,50 @@ export function renderLaterSignature(sig: LaterSignature, user: User): string {
         <img src="${escapeAttr(sig.signature)}" alt="${escapeAttr(`${sig.name} signature`)}" />
         <div class="detail">
           <p class="who">${escapeHtml(sig.name)}<span class="role">${escapeHtml(sig.role)}</span></p>
-          <p class="at">Signed ${escapeHtml(when)} &middot; captured by ${escapeHtml(
-            sig.addedByName || sig.addedBy
-          )}${mine ? `<button type="button" class="drop" data-act="delete-signature">Remove</button>` : ""}</p>
+          <p class="at">Signed ${escapeHtml(when)} &middot; ${
+            sig.linkId
+              ? `signed remotely, on a link sent by ${escapeHtml(sig.addedByName || sig.addedBy)}`
+              : `captured by ${escapeHtml(sig.addedByName || sig.addedBy)}`
+          }${mine ? `<button type="button" class="drop" data-act="delete-signature">Remove</button>` : ""}</p>
           ${sig.remark ? `<p class="body">${escapeHtml(sig.remark)}</p>` : ""}
         </div>
+      </article>`;
+}
+
+/**
+ * One outstanding (or spent) link on the report page. The address itself is
+ * only shown while the link can still be used: a spent link is a fact about
+ * what happened, not something to send to anybody else.
+ */
+export function renderSignLink(link: SignLink, user: User): string {
+  const mine = link.createdBy === user.username || canEditTenants(user);
+  const said = {
+    waiting: `Waiting &middot; expires ${escapeHtml(signedDate(link.expiresAt))}`,
+    signed: `Signed ${escapeHtml(signedDate(link.usedAt ?? link.createdAt))}`,
+    expired: `Expired ${escapeHtml(signedDate(link.expiresAt))}`,
+    revoked: `Withdrawn ${escapeHtml(signedDate(link.revokedAt ?? link.createdAt))}`,
+  }[link.state];
+  const url = signLinkUrl(link.token);
+  return `
+      <article class="sign-link" data-link="${link.id}">
+        <p class="who">${escapeHtml(link.signerName)}<span class="role">${escapeHtml(link.role)}</span>
+          <span class="state ${link.state}">${said}</span></p>
+        <p class="at">Sent by ${escapeHtml(link.createdByName || link.createdBy)} on
+          ${escapeHtml(signedDate(link.createdAt))}${
+            mine && link.state === "waiting"
+              ? `<button type="button" class="drop" data-act="revoke-link">Withdraw</button>`
+              : ""
+          }</p>
+        ${
+          link.state === "waiting"
+            ? `<div class="url">
+          <input type="text" readonly value="${escapeAttr(url)}" aria-label="Signing link for ${escapeAttr(
+            link.signerName
+          )}" />
+          <button type="button" data-act="copy-link">Copy</button>
+        </div>`
+            : ""
+        }
       </article>`;
 }
 
@@ -1246,6 +1558,83 @@ const SIGNATURES_JS = `
       })
       .catch(function (err) { problem(err.message); })
       .then(function () { save.disabled = false; });
+  });
+
+  /* ---- links out to whoever isn't here ---- */
+  var linkList = document.getElementById("link-list");
+  var linkBox = document.getElementById("send-link");
+  var linkName = document.getElementById("link-name");
+  var linkRole = document.getElementById("link-role");
+  var makeLink = document.getElementById("make-link");
+  var linkError = document.getElementById("link-error");
+
+  function linkProblem(message) {
+    linkError.textContent = message || "";
+    linkError.hidden = !message;
+  }
+
+  makeLink.addEventListener("click", function () {
+    var name = linkName.value.trim();
+    var role = linkRole.value.trim();
+    if (!name) { linkProblem("Who is the link for?"); linkName.focus(); return; }
+    if (!role) { linkProblem("What will they be signing as?"); linkRole.focus(); return; }
+    makeLink.disabled = true;
+    linkProblem("");
+    fetch("/api/inspections/" + id + "/sign-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name, role: role })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That link wasn't created.");
+          return data;
+        });
+      })
+      .then(function (data) {
+        linkList.insertAdjacentHTML("beforeend", data.link);
+        linkName.value = "";
+        linkRole.value = "";
+        linkBox.open = false;
+        // Straight onto the clipboard where the browser allows it: the next
+        // thing anybody does with a link they just made is paste it.
+        var field = linkList.querySelector(".sign-link:last-child .url input");
+        if (field) {
+          field.focus();
+          field.select();
+          if (navigator.clipboard) navigator.clipboard.writeText(field.value).catch(function () {});
+        }
+      })
+      .catch(function (err) { linkProblem(err.message); })
+      .then(function () { makeLink.disabled = false; });
+  });
+
+  linkList.addEventListener("click", function (e) {
+    var copy = e.target.closest('button[data-act="copy-link"]');
+    if (copy) {
+      var field = copy.parentElement.querySelector("input");
+      field.focus();
+      field.select();
+      var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(field.value).then(done, function () {});
+      else { try { document.execCommand("copy"); done(); } catch (err) { /* the field is selected either way */ } }
+      return;
+    }
+    var withdraw = e.target.closest('button[data-act="revoke-link"]');
+    if (!withdraw) return;
+    var row = withdraw.closest(".sign-link");
+    if (!window.confirm("Withdraw this link? Whoever has it will no longer be able to sign.")) return;
+    withdraw.disabled = true;
+    linkProblem("");
+    fetch("/api/inspections/" + id + "/sign-links/" + row.dataset.link, { method: "DELETE" })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That link wasn't withdrawn.");
+          return data;
+        });
+      })
+      .then(function (data) { row.outerHTML = data.link; })
+      .catch(function (err) { withdraw.disabled = false; linkProblem(err.message); });
   });
 
   list.addEventListener("click", function (e) {
@@ -1496,6 +1885,7 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
   const poor = poorItems(c);
   const notes = inspectionNotes(inspection.id);
   const laterSignatures = inspectionSignatures(inspection.id);
+  const links = inspectionSignLinks(inspection.id);
   const when = `${signedDate(inspection.createdAt)} at ${signedTime(inspection.createdAt)}`;
 
   const facts = [
@@ -1650,6 +2040,33 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
         <span class="err" id="signature-error" hidden></span>
       </div>
     </details>
+
+    <div id="link-list">${links.map((link) => renderSignLink(link, user)).join("")}</div>
+
+    <details class="add-sig" id="send-link">
+      <summary>Send a link to someone who isn&rsquo;t here</summary>
+      <p class="why" style="margin:0.6rem 0 0">They don&rsquo;t need an account. The link opens the
+        report and one box to sign it, works once, and expires in a fortnight &mdash; and it can be
+        withdrawn from here until it is used. Whoever holds it can read this inspection, so send it
+        to the person it names and nobody else.</p>
+      <div class="fields">
+        <div class="field">
+          <label for="link-name">Who is it for</label>
+          <input id="link-name" type="text" maxlength="120" autocomplete="off"
+            placeholder="${escapeAttr(c.agentName || "Their full name")}" />
+        </div>
+        <div class="field">
+          <label for="link-role">They will sign as</label>
+          <input id="link-role" type="text" maxlength="80" autocomplete="off" list="sig-roles"
+            placeholder="${escapeAttr(SIGNER_ROLES[0])}" />
+        </div>
+      </div>
+      <div class="row">
+        <button type="button" id="make-link">Create the link</button>
+        <span class="hint">Nothing is sent for you &mdash; copy it into your own email or text.</span>
+        <span class="err" id="link-error" hidden></span>
+      </div>
+    </details>
   </section>
   <script>${SIGNATURES_JS}</script>
 
@@ -1688,6 +2105,338 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
 
   return page(`${c.address} — inspection`, nav, navCss, DETAIL_CSS, body);
 }
+
+/* ------------------------------------------------------ the page a link opens */
+
+/**
+ * The page somebody outside the office sees when they follow a signing link.
+ *
+ * It carries no sign-in, no nav and nothing about any other property: whoever
+ * holds the link gets this inspection and the box to sign it, and that is the
+ * whole of what the token buys. Styled like the checklist form rather than the
+ * CRM, because it is the same audience — a person on a phone, once.
+ *
+ * What they are signing is on the page above the box. A signature under a
+ * summary somebody has to take on trust is worth less than one under the thing
+ * itself, so the findings are printed in full and the signed PDF is one tap
+ * away.
+ */
+const SIGN_CSS = `
+    :root { --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --bg: #f4f5f7; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink);
+      font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+    .wrap { max-width: 640px; margin: 0 auto; padding: 0 16px 48px; }
+    header { background: var(--ink); color: #fff; padding: 18px 0 16px; margin-bottom: 18px; }
+    header .wrap { padding-bottom: 0; }
+    header h1 { margin: 0; font-size: 1.05rem; letter-spacing: -0.01em; }
+    header p { margin: 4px 0 0; color: #9ca3af; font-size: 0.82rem; }
+    .card { background: #fff; border: 1px solid var(--line); border-radius: 12px;
+      padding: 16px; margin: 0 0 14px; }
+    .card h2 { margin: 0 0 6px; font-size: 1rem; }
+    .sub { margin: 0 0 10px; color: var(--muted); font-size: 0.86rem; }
+    .facts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+    .fact { flex: 1 1 6rem; background: #fff; border: 1px solid var(--line); border-radius: 10px;
+      padding: 8px 10px; }
+    .fact b { display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); }
+    .fact span { font-size: 1.1rem; font-weight: 600; }
+    .fact.poor span { color: #991b1b; }
+    ul.found { margin: 0; padding: 0; list-style: none; }
+    ul.found li { padding: 7px 0; border-top: 1px solid #f1f2f4; font-size: 0.88rem; }
+    ul.found li:first-child { border-top: 0; }
+    ul.found .where { font-weight: 600; }
+    ul.found .what { display: block; color: #374151; }
+    .cond { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 4px; font-size: 0.72rem;
+      font-weight: 600; margin-right: 6px; }
+    .cond.poor { background: #fee2e2; color: #991b1b; }
+    .cond.fair { background: #fff4e0; color: #a15c00; }
+    .btn { display: block; width: 100%; border: 0; border-radius: 12px; padding: 15px 16px;
+      background: var(--ink); color: #fff; font: 600 1rem system-ui, sans-serif; text-align: center;
+      text-decoration: none; cursor: pointer; }
+    .btn[disabled] { opacity: 0.55; }
+    .btn.ghost { background: #fff; color: var(--ink); border: 1px solid #cbd5e1; }
+    label { display: block; margin: 12px 0 4px; font-size: 0.78rem; text-transform: uppercase;
+      letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+    input, textarea { width: 100%; padding: 12px; border: 1px solid #cbd5e1; border-radius: 10px;
+      font: inherit; background: #fff; }
+    textarea { min-height: 84px; resize: vertical; }
+    input:focus, textarea:focus { outline: 2px solid #93c5fd; outline-offset: -1px; border-color: transparent; }
+    .sigwrap { position: relative; margin-top: 12px; border: 1px solid #cbd5e1; border-radius: 12px;
+      background: #fff; overflow: hidden; }
+    .sigwrap canvas { display: block; width: 100%; height: 190px; touch-action: none; }
+    .sigwrap .baseline { position: absolute; left: 18px; right: 18px; bottom: 46px;
+      border-bottom: 1px dashed #cbd5e1; }
+    .sigwrap .hintline { position: absolute; left: 18px; bottom: 24px; color: #b6bdc7; font-size: 0.8rem; }
+    .sigwrap.signed .baseline, .sigwrap.signed .hintline { display: none; }
+    .err { margin: 10px 0 0; padding: 10px 12px; background: #fef2f2; border: 1px solid #fecaca;
+      border-radius: 10px; color: #991b1b; font-size: 0.85rem; }
+    .note { margin: 0 0 14px; padding: 12px 14px; background: #eef2fb; border: 1px solid #c9d7f5;
+      border-radius: 12px; font-size: 0.86rem; color: #22386f; }
+    .done { text-align: center; padding: 26px 16px; }
+    .done .tick { width: 54px; height: 54px; margin: 0 auto 12px; border-radius: 50%; background: #e3f6e5;
+      color: #1e7d32; font-size: 1.7rem; line-height: 54px; }
+    footer.legal { color: var(--muted); font-size: 0.76rem; text-align: center; margin-top: 8px; }`;
+
+/** A standalone page: no nav, no sign-in, nothing about anything else. */
+function signPage(title: string, body: string): string {
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>${escapeHtml(title)}</title>
+  ${FAVICON_LINK}
+  <style>${SIGN_CSS}</style>
+</head>
+<body>
+${body}
+</body>
+</html>`;
+}
+
+/** Why a link doesn't work, said plainly and without a way to poke at it. */
+export function renderSignRefusal(reason: "unknown" | "signed" | "expired" | "revoked" | "gone"): string {
+  const said = {
+    unknown: ["This link isn’t valid", "It may have been mistyped, or it may never have existed."],
+    signed: ["This report has been signed", "That link has already been used. Nothing more is needed."],
+    expired: ["This link has expired", "Signing links last two weeks, and this one is past that."],
+    revoked: ["This link was withdrawn", "The office cancelled it."],
+    gone: ["That report is no longer here", "It may have been removed since the link was sent."],
+  }[reason];
+  return signPage(
+    said[0],
+    `<header><div class="wrap"><h1>Property condition report</h1></div></header>
+  <div class="wrap">
+    <div class="card">
+      <h2>${escapeHtml(said[0])}</h2>
+      <p class="sub">${escapeHtml(said[1])} If you were asked to sign something, contact the office
+        and they can send a new link.</p>
+    </div>
+  </div>`
+  );
+}
+
+/** The page itself: the report, then the box to sign it. */
+export function renderSignPage(link: SignLink, inspection: Inspection): string {
+  const c = inspection.checklist;
+  const t = tally(c);
+  const found = defects(c);
+  const wrote = written(c);
+  const when = `${signedDate(inspection.createdAt)} at ${signedTime(inspection.createdAt)}`;
+
+  const findings = found.length
+    ? `<ul class="found">${found
+        .map(
+          (d) => `<li>${conditionPill(d.condition)}<span class="where">${escapeHtml(d.room)} &mdash;
+            ${escapeHtml(d.label)}</span>${d.notes ? `<span class="what">${escapeHtml(d.notes)}</span>` : ""}</li>`
+        )
+        .join("")}</ul>`
+    : `<p class="sub">Nothing was marked poor or fair.</p>`;
+
+  const written_ = wrote.length
+    ? `<div class="card"><h2>What else was written</h2>
+      <ul class="found">${wrote
+        .map(
+          (w) => `<li><span class="where">${escapeHtml(w.where)}</span>
+            <span class="what">${escapeHtml(w.what)}</span></li>`
+        )
+        .join("")}</ul></div>`
+    : "";
+
+  const body = `<header><div class="wrap">
+    <h1>Property condition report</h1>
+    <p>${escapeHtml(c.address)}</p>
+  </div></header>
+  <div class="wrap">
+    <p class="note">${escapeHtml(link.createdByName || link.createdBy)} has asked you to sign this report
+      as <strong>${escapeHtml(link.role)}</strong>. Signing adds your name to it.
+      <strong>It changes nothing in the report</strong> &mdash; what is below was recorded on
+      ${escapeHtml(signedDate(inspection.createdAt))} and can&rsquo;t be edited by you or by anyone else.
+      If something here is wrong, say so in the box at the bottom rather than not signing: what you
+      write is kept with your signature.</p>
+
+    <div class="card">
+      <h2>${escapeHtml(c.address)}</h2>
+      <p class="sub">Walked and signed by ${escapeHtml(c.name)} on ${escapeHtml(when)}${
+        c.agentName ? `, with ${escapeHtml(c.agentName)} for the office` : ""
+      }.</p>
+      <div class="facts">
+        <div class="fact"><b>Rooms</b><span>${t.rooms}</span></div>
+        <div class="fact"><b>Items</b><span>${t.items}</span></div>
+        <div class="fact${t.poor ? " poor" : ""}"><b>Marked poor</b><span>${t.poor}</span></div>
+        <div class="fact"><b>Photos</b><span>${t.photos}</span></div>
+      </div>
+      <a class="btn ghost" href="/sign/${escapeAttr(link.token)}.pdf" target="_blank" rel="noopener">
+        Read the full report (PDF)</a>
+      <p class="sub" style="margin:8px 0 0">The document as it was signed on the day, with every room,
+        every rating and the photos.</p>
+    </div>
+
+    <div class="card">
+      <h2>What the walkthrough found</h2>
+      ${findings}
+    </div>
+    ${written_}
+    ${
+      c.generalNotes
+        ? `<div class="card"><h2>General notes</h2><p class="sub" style="white-space:pre-wrap;color:#374151">${escapeHtml(
+            c.generalNotes
+          )}</p></div>`
+        : ""
+    }
+
+    <div class="card" id="sign-card">
+      <h2>Your signature</h2>
+      <p class="sub">Signing as <strong>${escapeHtml(link.role)}</strong>.</p>
+      <label for="s-name">Your full name</label>
+      <input id="s-name" type="text" autocomplete="name" maxlength="120"
+        value="${escapeAttr(link.signerName)}" />
+      <label for="s-remark">Anything you want on the record <span style="text-transform:none">(optional)</span></label>
+      <textarea id="s-remark" maxlength="${REMARK_MAX}"
+        placeholder="What you agree with, what you disagree with, anything put right since&hellip;"></textarea>
+      <div class="sigwrap" id="s-wrap">
+        <canvas id="s-pad"></canvas>
+        <div class="baseline"></div>
+        <div class="hintline">Sign above the line</div>
+      </div>
+      <button type="button" class="btn ghost" id="s-clear" style="margin-top:10px">Clear</button>
+      <p class="err" id="s-error" hidden></p>
+      <button type="button" class="btn" id="s-save" style="margin-top:10px">Sign the report</button>
+      <p class="sub" style="margin:10px 0 0">This link is for you and works once. It expires on
+        ${escapeHtml(signedDate(link.expiresAt))}.</p>
+    </div>
+
+    <div class="card done" id="s-done" hidden>
+      <div class="tick">&check;</div>
+      <h2>Signed &mdash; thank you</h2>
+      <p class="sub" id="s-done-sub">Your signature has been added to this report.</p>
+      <a class="btn ghost" href="/sign/${escapeAttr(link.token)}.pdf" target="_blank" rel="noopener">
+        Open the report (PDF)</a>
+    </div>
+
+    <footer class="legal">Your signature is added after the pages that were signed on the day.
+      It does not alter them.</footer>
+  </div>
+  <script>${SIGN_JS.replace("__TOKEN__", link.token)}</script>`;
+
+  return signPage(`Sign — ${c.address}`, body);
+}
+
+/**
+ * The pad and the one request this page makes. Written the way the checklist
+ * form's is — plain ES5, no build step, and a canvas backed at device
+ * resolution so a finger line is sharp.
+ */
+const SIGN_JS = `
+(function () {
+  var token = "__TOKEN__";
+  var canvas = document.getElementById("s-pad");
+  var wrap = document.getElementById("s-wrap");
+  var ctx = canvas.getContext("2d");
+  var error = document.getElementById("s-error");
+  var save = document.getElementById("s-save");
+  var drawing = false, last = null, signed = false;
+
+  function problem(message) {
+    error.textContent = message || "";
+    error.hidden = !message;
+  }
+  function size() {
+    var ratio = window.devicePixelRatio || 1;
+    var w = wrap.clientWidth, h = canvas.clientHeight;
+    if (!w || !h) return;
+    var previous = signed ? canvas.toDataURL() : null;
+    canvas.width = Math.round(Math.min(w, 2000) * ratio);
+    canvas.height = Math.round(Math.min(h, 400) * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#111827";
+    if (previous) {
+      var img = new Image();
+      img.onload = function () { ctx.drawImage(img, 0, 0, w, h); };
+      img.src = previous;
+    }
+  }
+  function at(e) {
+    var r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  canvas.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    drawing = true;
+    signed = true;
+    last = at(e);
+    // A tap with no movement still leaves a mark, or a dotted "i" vanishes.
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 1.1, 0, Math.PI * 2);
+    ctx.fillStyle = "#111827";
+    ctx.fill();
+    wrap.classList.add("signed");
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* drawing works without it */ }
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var p = at(e);
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    last = p;
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (type) {
+    canvas.addEventListener(type, function () { drawing = false; });
+  });
+  window.addEventListener("resize", size);
+  size();
+
+  document.getElementById("s-clear").addEventListener("click", function () {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    signed = false;
+    wrap.classList.remove("signed");
+  });
+
+  save.addEventListener("click", function () {
+    var name = document.getElementById("s-name").value.trim();
+    if (!name) { problem("Please put your name in."); document.getElementById("s-name").focus(); return; }
+    if (!signed) { problem("Sign in the box above first."); return; }
+    problem("");
+    save.disabled = true;
+    save.textContent = "Signing\\u2026";
+    fetch("/sign/" + token, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name,
+        remark: document.getElementById("s-remark").value.trim(),
+        signature: canvas.toDataURL("image/png")
+      })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That didn't save. Please try again.");
+          return data;
+        });
+      })
+      .then(function () {
+        document.getElementById("sign-card").hidden = true;
+        document.getElementById("s-done").hidden = false;
+        document.getElementById("s-done").scrollIntoView({ block: "center", behavior: "smooth" });
+      })
+      .catch(function (err) {
+        problem(err.message);
+        save.disabled = false;
+        save.textContent = "Sign the report";
+      });
+  });
+})();`;
 
 /* ------------------------------------------------------------------- serving */
 

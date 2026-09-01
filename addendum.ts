@@ -47,6 +47,8 @@ export type AddendumSignature = {
   signedAt: string;
   addedBy: string;
   addedByName: string | null;
+  /** Set when it was signed remotely, on a link the office sent out. */
+  linkId?: number | null;
 };
 
 export type AddendumMeta = {
@@ -269,10 +271,13 @@ export async function appendAddendum(
       });
       y -= 12;
 
-      draw(
-        `Signed ${stamp(sig.signedAt)}  ·  captured by ${sig.addedByName || sig.addedBy}`,
-        MARGIN + 12, 8.5, regular, MUTED
-      );
+      // How the mark was taken is part of the record: a signature made on a
+      // link, by somebody at their own kitchen table, is a different act from
+      // one taken on the office's laptop, and the page says which.
+      const how = sig.linkId
+        ? `signed remotely, on a link sent by ${sig.addedByName || sig.addedBy}`
+        : `captured by ${sig.addedByName || sig.addedBy}`;
+      draw(`Signed ${stamp(sig.signedAt)}  ·  ${how}`, MARGIN + 12, 8.5, regular, MUTED);
       y -= 14;
 
       for (const line of remarkLines) {

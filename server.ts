@@ -29,20 +29,29 @@ import {
 import {
   addInspectionNote,
   addInspectionSignature,
+  createSignLink,
   deleteInspectionNote,
   deleteInspectionSignature,
+  inspectionSignLinks,
   isChecklistPath,
   proxyChecklistApp,
   renderInspection,
   renderInspectionsList,
   renderLaterSignature,
   renderNote,
+  renderSignLink,
+  renderSignPage,
+  renderSignRefusal,
+  readSignInvitation,
+  revokeSignLink,
   serveInspectionPdf,
   serveInspectionUpload,
+  signByLink,
 } from "./inspections";
 import {
   trustedOrigins,
   authenticate,
+  originMismatch,
   handleLogin,
   handleLogout,
   handleSetup,
@@ -1561,6 +1570,67 @@ const server = Bun.serve({
       return handleLogout(req);
     }
 
+    /**
+     * Signing an inspection on a link, by somebody who has no account here and
+     * shouldn't need one — the tenant who has moved out, the landlord, the
+     * contractor who saw the damage.
+     *
+     * This is the only route in the app that answers without a session, and it
+     * is deliberately narrow: the token in the address is the authority, it
+     * buys one inspection and one signature, it expires, and it can be
+     * withdrawn. The same bargain as the checklist PDF links — the link is the
+     * credential — which is why the office is told, where it makes one, to send
+     * it to the person it names and nobody else.
+     */
+    const signLink = url.pathname.match(/^\/sign\/([A-Za-z0-9_-]{20,64})(\.pdf)?$/);
+    if (signLink) {
+      const [, token, wantsPdf] = signLink;
+
+      // Same protection a signed-in POST gets: this one has no session to
+      // borrow, but a form on somebody else's site still has no business
+      // posting here.
+      if (originMismatch(req)) {
+        return Response.json({ error: "cross-origin request rejected" }, { status: 403 });
+      }
+
+      if (req.method === "GET") {
+        const invitation = readSignInvitation(token);
+        if ("refusal" in invitation) {
+          return new Response(renderSignRefusal(invitation.refusal), {
+            status: invitation.refusal === "unknown" ? 404 : 410,
+            headers: HTML_HEADERS,
+          });
+        }
+        // The report itself, for a link that is still good — as it was signed,
+        // with no addendum on it. What the office has written about the
+        // property since is its own business, and this is the document they
+        // are being asked to put their name to, not the file it has become.
+        if (wantsPdf) return await serveInspectionPdf(invitation.inspection.id, true);
+        return new Response(renderSignPage(invitation.link, invitation.inspection), {
+          headers: HTML_HEADERS,
+        });
+      }
+
+      if (req.method === "POST" && !wantsPdf) {
+        if (Number(req.headers.get("content-length") ?? 0) > 2 * 1024 * 1024) {
+          return Response.json({ error: "That signature is too large." }, { status: 413 });
+        }
+        let body: any;
+        try {
+          body = await req.json();
+        } catch {
+          return Response.json({ error: "expected a JSON body" }, { status: 400 });
+        }
+        const result = signByLink(token, body ?? {});
+        if ("error" in result) {
+          return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
+        }
+        return Response.json({ ok: true }, { status: 201, headers: { "Cache-Control": "no-store, private" } });
+      }
+
+      return new Response("Method not allowed", { status: 405 });
+    }
+
     const user = authenticate(req);
     if (user instanceof Response) return user;
 
@@ -1692,6 +1762,45 @@ const server = Bun.serve({
         return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
       }
       return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
+    }
+
+    /**
+     * Making and withdrawing the links above. Anyone signed in may send one —
+     * chasing a countersignature is everybody's job — and it carries their name
+     * to whoever opens it. Withdrawing is limited to whoever sent it, or Dan.
+     */
+    const signLinks = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/sign-links$/);
+    if (signLinks) {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      let body: any;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "expected a JSON body" }, { status: 400 });
+      }
+      const result = createSignLink(signLinks[1], user, body ?? {});
+      if ("error" in result) {
+        return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
+      }
+      return Response.json(
+        { ok: true, link: renderSignLink(result.link, user) },
+        { status: 201, headers: { "Cache-Control": "no-store, private" } }
+      );
+    }
+
+    const signLinkOne = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/sign-links\/(\d+)$/);
+    if (signLinkOne) {
+      if (req.method !== "DELETE") return new Response("Method not allowed", { status: 405 });
+      const result = revokeSignLink(signLinkOne[1], Number(signLinkOne[2]), user);
+      if ("error" in result) {
+        return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
+      }
+      // Handed back rendered, so the row on the page becomes what it now is.
+      const link = inspectionSignLinks(signLinkOne[1]).find((l) => l.id === Number(signLinkOne[2]));
+      return Response.json(
+        { ok: true, link: link ? renderSignLink(link, user) : "" },
+        { headers: { "Cache-Control": "no-store, private" } }
+      );
     }
 
     const inspectionNote = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/notes\/(\d+)$/);

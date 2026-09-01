@@ -164,6 +164,48 @@ db.run(`
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_inspection_signatures ON inspection_signatures(checklist_id, id)`);
 
+/**
+ * Links handed to somebody outside the office so they can sign an inspection
+ * themselves.
+ *
+ * A tenant, a landlord or a contractor has no account here and never will —
+ * making one to collect a signature is a worse idea than the problem it
+ * solves. So the office creates a link, sends it, and whoever holds it can read
+ * the report and sign it once. The token *is* the authority, exactly as it is
+ * for a checklist PDF: unguessable, and treated as the credential it is.
+ *
+ * Which is why each one is narrow. It signs one inspection and nothing else,
+ * it expires, it can be revoked, and it stops working the moment it has been
+ * used. It carries who it was made for so a report can say what is outstanding
+ * and who was chased.
+ */
+db.run(`
+  CREATE TABLE IF NOT EXISTS inspection_sign_links (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    token           TEXT NOT NULL UNIQUE,
+    checklist_id    TEXT NOT NULL,
+    signer_name     TEXT NOT NULL DEFAULT '',
+    role            TEXT NOT NULL DEFAULT '',
+    created_at      TEXT NOT NULL,
+    created_by      TEXT NOT NULL,
+    created_by_name TEXT,
+    expires_at      TEXT NOT NULL,
+    used_at         TEXT,
+    signature_id    INTEGER,
+    revoked_at      TEXT,
+    revoked_by      TEXT
+  )`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_inspection_sign_links ON inspection_sign_links(checklist_id, id)`);
+
+// Added when signing moved off this machine; existing databases pick it up here.
+if (
+  !(db.query(`PRAGMA table_info(inspection_signatures)`).all() as { name: string }[])
+    .some((c) => c.name === "link_id")
+) {
+  db.run(`ALTER TABLE inspection_signatures ADD COLUMN link_id INTEGER`);
+}
+
 /** How many past states of each sheet to keep. Roughly a day of active use. */
 export const SHEET_VERSIONS_KEPT = 60;
 

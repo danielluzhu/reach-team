@@ -77,7 +77,11 @@ and the `Host` it was compared against.
 ## Accounts and sign-in
 
 Everything here is tenant PII — names, phones, home addresses, rent, and the unit
-door codes in the Leases sheet — so every route requires a signed-in user.
+door codes in the Leases sheet — so every route requires a signed-in user, with
+one deliberate exception: `/sign/<token>`, where somebody outside the office is
+asked to sign one inspection. That link is the credential, it buys that one
+report and nothing else, and it expires and can be withdrawn — see
+[Sending someone a link to sign](#sending-someone-a-link-to-sign).
 
 **First run:** with no accounts in the database, opening the app on this machine
 sends you to `/setup` to create the first one, and signs you straight in. That
@@ -1002,8 +1006,11 @@ what was found days later. **Signed after the walkthrough** on each report takes
 that signature: a name, what they are signing as, an optional remark, and a
 signature drawn with a finger, a stylus or a mouse.
 
-It is reached from three places, because a report runs to thousands of pixels
-and a card at the bottom of one is a card nobody finds: **Sign** in the list
+A signature can be taken two ways: on a device the office is holding, or by
+sending the person a link (below). Both land in the same place.
+
+The card is reached from three places, because a report runs to thousands of
+pixels and a card at the bottom of one is a card nobody finds: **Sign** in the list
 beside the PDF, a button at the top of the report — which reads *Sign as
 &lt;the agent&gt;* when an agent was named and never signed — and the card itself.
 All three open the pad and put the cursor in the name field. The header line
@@ -1032,6 +1039,44 @@ that captured it and the remark. The addendum's own heading and preamble say
 what is on it: that everything there was added later, and that nothing on it
 changes what was certified above. The list marks a report somebody signed
 afterwards with **N signed later**, and the filter box matches those names.
+
+#### Sending someone a link to sign
+
+The signatures that go missing belong to the people who have no account here and
+never will: the tenant who has moved out, the landlord, the contractor who saw
+the damage. **Send a link to someone who isn't here** makes one, addressed to a
+name and a capacity — the office decides what they are signing as, they don't.
+
+The link goes to `/sign/<token>`: the one route in this app that answers without
+a session. The token is 32 random bytes and it *is* the authority, the same
+bargain as a checklist PDF link. Everything else about it is kept narrow:
+
+- it signs **one** inspection and nothing else;
+- it works **once** — the row is claimed with an atomic update before the
+  signature is written, so two taps on a slow phone can't produce two
+  signatures;
+- it **expires** after 14 days;
+- it can be **withdrawn** from the report until it is used, by whoever sent it
+  or the owner;
+- it carries no cookie and sets none, and a POST to it is held to the same
+  cross-origin check a signed-in one is.
+
+The page it opens is standalone — no nav, no sign-in, nothing about any other
+property. It shows what is being signed rather than asking for trust: the
+address, who walked it and when, the tally, every item marked poor or fair with
+its note, the general notes, and the signed PDF one tap away. That PDF is served
+**as signed**, with no addendum: what the office has written about the property
+since is its own business, and the document they are being asked to endorse is
+the one from the day.
+
+Then a name (theirs to correct — the office types other people's names wrong), an
+optional remark, and a signature pad. What comes back is an ordinary later
+signature, with one difference: the report, the page and the addendum all say
+*signed remotely, on a link sent by <whoever sent it>*, because a mark made at
+somebody's kitchen table is a different act from one taken on the office laptop.
+
+Whoever holds the link can read that inspection. That is the point of it, and it
+is why the card says to send it to the person it names and nobody else.
 
 ### Comments added after signing
 
