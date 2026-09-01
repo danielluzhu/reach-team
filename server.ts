@@ -29,6 +29,7 @@ import {
 import {
   addInspectionNote,
   addInspectionSignature,
+  createFormLink,
   createSignLink,
   deleteInspectionNote,
   deleteInspectionSignature,
@@ -42,6 +43,9 @@ import {
   renderSignLink,
   renderSignPage,
   renderSignRefusal,
+  proxyTenantForm,
+  readFormInvitation,
+  readFormLink,
   readSignInvitation,
   revokeSignLink,
   serveInspectionPdf,
@@ -1631,6 +1635,63 @@ const server = Bun.serve({
       return new Response("Method not allowed", { status: 405 });
     }
 
+    /**
+     * A whole checklist, sent to a tenant on a link and filled in by them.
+     *
+     * The same form the office fills a duplicate in on, and the same proxy —
+     * authorised by the token in the path rather than by a session, and held to
+     * an allowlist of the paths that form actually needs (see
+     * proxyTenantForm). The tenant walks their own rooms, takes their own
+     * photos and signs at the end; what comes back is a checklist of its own,
+     * and the link is spent.
+     */
+    const formLink = url.pathname.match(/^\/form\/([A-Za-z0-9_-]{20,64})(\/.*)?$/);
+    if (formLink) {
+      const [, token, rest] = formLink;
+      if (originMismatch(req)) {
+        return Response.json({ error: "cross-origin request rejected" }, { status: 403 });
+      }
+      // A link that has been used still has to hand back the checklist it
+      // produced: the screen at the end of a walkthrough offers the PDF, and
+      // by then the link is spent. That one path stays open; nothing else does.
+      const spent = readFormLink(token);
+      if (
+        spent &&
+        spent.state === "signed" &&
+        spent.resultId &&
+        req.method === "GET" &&
+        rest === `/checklists/${spent.resultId}.pdf`
+      ) {
+        return await proxyTenantForm(req, url, token, spent, spent.resultId);
+      }
+
+      const invitation = readFormInvitation(token);
+      if ("refusal" in invitation) {
+        // A page for a browser, a short JSON for the form's own calls — which
+        // is what a link that expires mid-walkthrough hits.
+        if (rest && rest !== "/") {
+          return Response.json({ error: "That link is no longer valid." }, { status: 410 });
+        }
+        return new Response(renderSignRefusal(invitation.refusal, "form"), {
+          status: invitation.refusal === "unknown" ? 404 : 410,
+          headers: HTML_HEADERS,
+        });
+      }
+      // Opening the bare link starts the copy: the form reads what to copy from
+      // its own address, so it is put there once and taken out again by the page
+      // as soon as it has been used.
+      if (req.method === "GET" && (!rest || rest === "/") && !url.search) {
+        return new Response(null, {
+          status: 303,
+          headers: {
+            Location: `/form/${token}/?copy=${invitation.inspection.id}`,
+            "Cache-Control": "no-store, private",
+          },
+        });
+      }
+      return await proxyTenantForm(req, url, token, invitation.link, invitation.inspection.id);
+    }
+
     const user = authenticate(req);
     if (user instanceof Response) return user;
 
@@ -1777,7 +1838,12 @@ const server = Bun.serve({
       // link looks.
       if (req.method === "GET") {
         return Response.json(
-          { links: inspectionSignLinks(signLinks[1]).map((link) => renderSignLink(link, user)) },
+          {
+            links: inspectionSignLinks(signLinks[1]).map((link) => ({
+              kind: link.kind,
+              html: renderSignLink(link, user),
+            })),
+          },
           { headers: { "Cache-Control": "no-store, private" } }
         );
       }
@@ -1789,6 +1855,26 @@ const server = Bun.serve({
         return Response.json({ error: "expected a JSON body" }, { status: 400 });
       }
       const result = createSignLink(signLinks[1], user, body ?? {});
+      if ("error" in result) {
+        return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
+      }
+      return Response.json(
+        { ok: true, link: renderSignLink(result.link, user) },
+        { status: 201, headers: { "Cache-Control": "no-store, private" } }
+      );
+    }
+
+    /** The other kind: a whole checklist sent to a tenant to fill in and sign. */
+    const formLinks = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/form-links$/);
+    if (formLinks) {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      let body: any;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "expected a JSON body" }, { status: 400 });
+      }
+      const result = createFormLink(formLinks[1], user, body ?? {});
       if ("error" in result) {
         return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
       }

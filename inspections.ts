@@ -111,6 +111,158 @@ export async function proxyChecklistApp(req: Request, url: URL): Promise<Respons
   }
 }
 
+/**
+ * The checklist form, opened by a tenant on a link, with no sign-in anywhere in
+ * sight.
+ *
+ * The office already fills a duplicate in through /checklist, behind its own
+ * door. This is the same form and the same proxy, authorised by the token in
+ * the path instead of a session — so a tenant walks their own rooms, takes
+ * their own photos and signs at the end, and what comes back is a checklist of
+ * its own.
+ *
+ * Which makes this an unauthenticated door onto the checklist app, so it is
+ * held to an allowlist rather than passing anything through. The form needs
+ * nine paths and gets nine paths; the copy it is allowed to read is the one
+ * report the link was made from, and nothing else on :3100 is reachable.
+ */
+const FORM_PATHS: RegExp[] = [
+  /^\/$/,
+  /^\/favicon\.svg$/,
+  /^\/apple-touch-icon\.png$/,
+  /^\/api\/templates$/,
+  /^\/api\/rooms$/,
+  /^\/api\/uploads$/,
+  /^\/uploads\/[0-9a-f-]{36}\.[a-z0-9]{2,5}$/,
+  /^\/api\/drafts\/[0-9a-f-]{36}$/,
+  /^\/api\/checklists$/,
+  /^\/api\/client-error$/,
+];
+
+/**
+ * What the tenant's browser is allowed to ask for, and what it isn't.
+ *
+ * The two paths that name a record are checked against the link rather than
+ * matched by shape, because a token for one property must not read another's:
+ * the copy is the report this link was made from, and the only PDF is the one
+ * this link itself produced. Every other checklist on :3100 is behind an id
+ * this holder has no business having, and now can't use even if they do.
+ */
+function formPathAllowed(path: string, sourceId: string, resultId: string | null): boolean {
+  if (path === `/api/checklists/${sourceId}/copy`) return true;
+  if (resultId && path === `/checklists/${resultId}.pdf`) return true;
+  return FORM_PATHS.some((allowed) => allowed.test(path));
+}
+
+/**
+ * The link behind a token whatever state it is in.
+ *
+ * Used for the one thing that has to keep working after a link is spent: the
+ * "your copy is ready" screen at the end of a walkthrough fetches the PDF it
+ * just produced, and by then the link has been used. Refusing there would mean
+ * signing a checklist and being handed a dead link to it.
+ */
+export function readFormLink(token: string): SignLink | null {
+  if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return null;
+  const row = readLinkByToken.get(token) as LinkRow | undefined;
+  if (!row) return null;
+  const link = toLink(row);
+  return link.kind === "form" ? link : null;
+}
+
+/**
+ * Serves the form under /form/<token>.
+ *
+ * Two things are done to the traffic on the way past. The copy handed to the
+ * page has the tenant's own name and email put into it, so the form opens as
+ * theirs rather than as the last tenant's — the office decided who this is for.
+ * And a submission that succeeds is watched for: the link is spent at that
+ * point, and the report that sent it should point at the one that came back.
+ */
+export async function proxyTenantForm(
+  req: Request,
+  url: URL,
+  token: string,
+  link: SignLink,
+  sourceId: string
+): Promise<Response> {
+  const prefix = `/form/${token}`;
+  const path = url.pathname.slice(prefix.length) || "/";
+  if (!formPathAllowed(path, sourceId, link.resultId)) {
+    console.warn(
+      `[${new Date().toISOString()}] form link ${link.id} asked for ${path}, which isn't part of the form`
+    );
+    return new Response("Not found", { status: 404, headers: { "Cache-Control": "no-store, private" } });
+  }
+
+  const headers = new Headers();
+  for (const name of ["content-type", "content-length", "accept", "user-agent"]) {
+    const value = req.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.set("X-Forwarded-Prefix", prefix);
+
+  // Whether the copy comes over filled in or blank is the link's to say, not
+  // the address bar's: it was decided by whoever sent it.
+  const query = path.endsWith("/copy") ? (link.fresh ? "?fresh=1" : "") : url.search;
+
+  const body = req.method === "GET" || req.method === "HEAD" ? undefined : req.body;
+  let res: Response;
+  try {
+    res = await fetch(`${CHECKLIST_URL}${path}${query}`, {
+      method: req.method,
+      headers,
+      body,
+      redirect: "manual",
+      ...(body ? { duplex: "half" } : {}),
+    } as RequestInit);
+  } catch (err) {
+    console.warn(`Could not reach the checklist app at ${CHECKLIST_URL}.`, err);
+    return new Response(
+      "The checklist can't be opened right now. Nothing you have filled in is lost — " +
+        "try again in a few minutes, or contact the office.",
+      { status: 502, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store, private" } }
+    );
+  }
+
+  const out = new Headers(res.headers);
+  out.set("Cache-Control", "no-store, private");
+
+  // The copy, with the tenant this link was made for written into it.
+  if (path.endsWith("/copy") && res.ok) {
+    try {
+      const copy = (await res.json()) as Record<string, unknown>;
+      copy.name = link.signerName;
+      copy.email = link.tenantEmail;
+      // Who signed it last time is the office's business, not the next
+      // tenant's. The date stays, because the page has to be able to say
+      // where the answers on screen came from.
+      const from = copy.from as Record<string, unknown> | undefined;
+      if (from) copy.from = { ...from, name: "", address: "" };
+      out.delete("content-length");
+      return new Response(JSON.stringify(copy), { status: res.status, headers: out });
+    } catch (err) {
+      console.warn(`Could not rewrite the copy for form link ${link.id}.`, err);
+      return new Response(null, { status: 502, headers: out });
+    }
+  }
+
+  // A checklist that has actually been signed spends the link.
+  if (path === "/api/checklists" && req.method === "POST" && res.status === 201) {
+    const text = await res.text();
+    try {
+      const made = JSON.parse(text) as { id?: string };
+      if (made?.id) formLinkFilled(token, made.id);
+    } catch (err) {
+      console.warn(`A checklist came back on form link ${link.id} in a shape we couldn't read.`, err);
+    }
+    out.delete("content-length");
+    return new Response(text, { status: res.status, headers: out });
+  }
+
+  return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
+}
+
 /** The properties are all in Seattle, so that's where a signing time is read. */
 const TIME_ZONE = process.env.CHECKLIST_TZ ?? "America/Los_Angeles";
 
@@ -526,8 +678,16 @@ export function deleteInspectionSignature(
 export type SignLink = {
   id: number;
   token: string;
+  /** `sign` puts a name to this report; `form` sends a whole checklist out. */
+  kind: "sign" | "form";
   signerName: string;
   role: string;
+  /** Only a form link has one: where the finished checklist is sent. */
+  tenantEmail: string;
+  /** A form link that starts blank — same property and rooms, no answers. */
+  fresh: boolean;
+  /** The checklist a form link produced, once it has been filled in. */
+  resultId: string | null;
   createdAt: string;
   createdBy: string;
   createdByName: string | null;
@@ -541,22 +701,21 @@ export type SignLink = {
 /** Long enough that a walkthrough's countersignature isn't chased twice. */
 const LINK_DAYS = 14;
 
+const LINK_COLUMNS = `id, token, kind, signer_name, role, tenant_email, fresh,
+          result_checklist_id, created_at, created_by, created_by_name, expires_at, used_at, revoked_at`;
+
 const insertLink = db.query(
   `INSERT INTO inspection_sign_links
-     (token, checklist_id, signer_name, role, created_at, created_by, created_by_name, expires_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-   RETURNING id, token, signer_name, role, created_at, created_by, created_by_name,
-             expires_at, used_at, revoked_at`
+     (token, checklist_id, kind, signer_name, role, tenant_email, fresh,
+      created_at, created_by, created_by_name, expires_at)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   RETURNING ${LINK_COLUMNS}`
 );
 const listLinks = db.query(
-  `SELECT id, token, signer_name, role, created_at, created_by, created_by_name,
-          expires_at, used_at, revoked_at
-   FROM inspection_sign_links WHERE checklist_id = ? ORDER BY id`
+  `SELECT ${LINK_COLUMNS} FROM inspection_sign_links WHERE checklist_id = ? ORDER BY id`
 );
 const readLinkByToken = db.query(
-  `SELECT id, token, checklist_id, signer_name, role, created_at, created_by, created_by_name,
-          expires_at, used_at, revoked_at
-   FROM inspection_sign_links WHERE token = ?`
+  `SELECT ${LINK_COLUMNS}, checklist_id FROM inspection_sign_links WHERE token = ?`
 );
 const readLinkById = db.query(
   `SELECT id, checklist_id, created_by, used_at, revoked_at FROM inspection_sign_links WHERE id = ?`
@@ -576,16 +735,21 @@ const revokeLink = db.query(
 );
 
 type LinkRow = {
-  id: number; token: string; signer_name: string; role: string; created_at: string;
-  created_by: string; created_by_name: string | null; expires_at: string;
-  used_at: string | null; revoked_at: string | null;
+  id: number; token: string; kind: string; signer_name: string; role: string;
+  tenant_email: string; fresh: number; result_checklist_id: string | null;
+  created_at: string; created_by: string; created_by_name: string | null;
+  expires_at: string; used_at: string | null; revoked_at: string | null;
 };
 
 const toLink = (r: LinkRow): SignLink => ({
   id: r.id,
   token: r.token,
+  kind: r.kind === "form" ? "form" : "sign",
   signerName: r.signer_name,
   role: r.role,
+  tenantEmail: r.tenant_email ?? "",
+  fresh: Boolean(r.fresh),
+  resultId: r.result_checklist_id,
   createdAt: r.created_at,
   createdBy: r.created_by,
   createdByName: r.created_by_name,
@@ -606,7 +770,7 @@ export function inspectionSignLinks(checklistId: string): SignLink[] {
 }
 
 const allLinks = db.query(
-  `SELECT checklist_id, expires_at, used_at, revoked_at FROM inspection_sign_links`
+  `SELECT checklist_id, kind, expires_at, used_at, revoked_at FROM inspection_sign_links`
 );
 
 /**
@@ -614,14 +778,18 @@ const allLinks = db.query(
  * Only the ones somebody could still sign count: a spent or withdrawn link is
  * not something anybody is waiting on.
  */
-function outstandingLinks(): Map<string, number> {
-  const waiting = new Map<string, number>();
+function outstandingLinks(): Map<string, { sign: number; form: number }> {
+  const waiting = new Map<string, { sign: number; form: number }>();
   const now = Date.now();
   for (const row of allLinks.all() as {
-    checklist_id: string; expires_at: string; used_at: string | null; revoked_at: string | null;
+    checklist_id: string; kind: string; expires_at: string;
+    used_at: string | null; revoked_at: string | null;
   }[]) {
     if (row.used_at || row.revoked_at || new Date(row.expires_at).getTime() < now) continue;
-    waiting.set(row.checklist_id, (waiting.get(row.checklist_id) ?? 0) + 1);
+    const seen = waiting.get(row.checklist_id) ?? { sign: 0, form: 0 };
+    if (row.kind === "form") seen.form++;
+    else seen.sign++;
+    waiting.set(row.checklist_id, seen);
   }
   return waiting;
 }
@@ -632,9 +800,11 @@ function outstandingLinks(): Map<string, number> {
  * arrives over localhost or through a proxy — and a link to 127.0.0.1 is the
  * kind of thing somebody sends to a tenant once.
  */
-export function signLinkUrl(token: string, origin?: string): string {
+export function signLinkUrl(link: Pick<SignLink, "token" | "kind">, origin?: string): string {
   const base = (trustedOrigins[0] ?? origin ?? "").replace(/\/+$/, "");
-  return `${base}/sign/${token}`;
+  // A signature and a whole checklist are different pages: one shows the report
+  // and a box, the other is the walkthrough form itself.
+  return `${base}/${link.kind === "form" ? "form" : "sign"}/${link.token}`;
 }
 
 /**
@@ -659,7 +829,7 @@ export function createSignLink(
   const now = new Date();
   const expires = new Date(now.getTime() + LINK_DAYS * 24 * 60 * 60 * 1000);
   const row = insertLink.get(
-    token, checklistId, name, role, now.toISOString(),
+    token, checklistId, "sign", name, role, "", 0, now.toISOString(),
     user.username, displayName(user), expires.toISOString()
   ) as LinkRow;
   // The token is deliberately not logged: it is a credential, and this log is
@@ -669,6 +839,73 @@ export function createSignLink(
       `${user.username} for ${name} (${role}), expires ${expires.toISOString().slice(0, 10)}`
   );
   return { link: toLink(row) };
+}
+
+/**
+ * A whole checklist sent to a tenant to fill in and sign themselves.
+ *
+ * This is the duplicate feature handed to the person the checklist is about,
+ * rather than done on the office's laptop: the property, the rooms, the notes
+ * about which bedroom is which — and, unless it is asked for fresh, what was
+ * recorded last time — copied from this report and addressed to whoever is
+ * living there now. They walk the rooms, take their own photos and sign at the
+ * end, and what comes back is a checklist of its own.
+ *
+ * The tenant's name and email are the office's to set, because they are what
+ * makes it a different tenancy from the one being copied. The tenant can still
+ * correct them on the form: the office types other people's names wrong, and a
+ * checklist signed under the wrong one is worth arguing about later.
+ */
+export function createFormLink(
+  checklistId: string,
+  user: User,
+  input: { name?: unknown; email?: unknown; fresh?: unknown }
+): { link: SignLink } | { error: string; status: number } {
+  if (!readInspection(checklistId)) {
+    return { error: "That inspection no longer exists — reload the page.", status: 404 };
+  }
+  const name = String(input?.name ?? "").trim().slice(0, 120);
+  const email = String(input?.email ?? "").trim().slice(0, 160);
+  if (!name) return { error: "Who is the checklist for? Their name goes on it.", status: 400 };
+  // Checked here as well as in the form, because the form won't submit without
+  // one and finding that out at the end of a walkthrough is too late.
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return { error: "That email address doesn't look right.", status: 400 };
+  }
+
+  const token = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
+  const now = new Date();
+  const expires = new Date(now.getTime() + LINK_DAYS * 24 * 60 * 60 * 1000);
+  const row = insertLink.get(
+    token, checklistId, "form", name, "Tenant", email, input?.fresh ? 1 : 0,
+    now.toISOString(), user.username, displayName(user), expires.toISOString()
+  ) as LinkRow;
+  console.log(
+    `[${now.toISOString()}] inspection ${checklistId.slice(0, 8)} form link ${row.id} created by ` +
+      `${user.username} for ${name} (${input?.fresh ? "blank" : "copied"}), ` +
+      `expires ${expires.toISOString().slice(0, 10)}`
+  );
+  return { link: toLink(row) };
+}
+
+/**
+ * A checklist has come back on a form link: the link is spent, and the report
+ * that sent it now points at the one that was filled in.
+ *
+ * Called by the proxy as it watches the submission go through, because the
+ * checklist app knows nothing about links and shouldn't have to.
+ */
+export function formLinkFilled(token: string, newChecklistId: string): void {
+  const row = readLinkByToken.get(token) as LinkRow | undefined;
+  if (!row || row.used_at) return;
+  db.run(
+    `UPDATE inspection_sign_links SET used_at = ?, result_checklist_id = ? WHERE id = ? AND used_at IS NULL`,
+    [new Date().toISOString(), newChecklistId, row.id]
+  );
+  console.log(
+    `[${new Date().toISOString()}] form link ${row.id} filled in by ${row.signer_name} ` +
+      `-> checklist ${newChecklistId.slice(0, 8)}`
+  );
 }
 
 /** Withdraws a link that hasn't been used. */
@@ -696,13 +933,17 @@ export function revokeSignLink(
 }
 
 /** The link behind a token, with why it can't be used where that's the case. */
-function openLink(token: string):
+function openLink(token: string, kind: "sign" | "form" = "sign"):
   | { link: SignLink; inspection: Inspection }
   | { refusal: "unknown" | "signed" | "expired" | "revoked" | "gone" } {
   if (!/^[A-Za-z0-9_-]{20,64}$/.test(token)) return { refusal: "unknown" };
   const row = readLinkByToken.get(token) as (LinkRow & { checklist_id: string }) | undefined;
   if (!row) return { refusal: "unknown" };
   const link = toLink(row);
+  // A token buys exactly the thing it was made for. A link to fill in a
+  // checklist is not a link to sign somebody else's, whichever address it is
+  // presented at.
+  if (link.kind !== kind) return { refusal: "unknown" };
   if (link.state !== "waiting") return { refusal: link.state };
   const inspection = readInspection(row.checklist_id);
   if (!inspection) return { refusal: "gone" };
@@ -717,7 +958,10 @@ export type SignInvitation =
   | { link: SignLink; inspection: Inspection }
   | { refusal: "unknown" | "signed" | "expired" | "revoked" | "gone" };
 
-export const readSignInvitation = (token: string): SignInvitation => openLink(token);
+export const readSignInvitation = (token: string): SignInvitation => openLink(token, "sign");
+
+/** The same, for a link that carries a whole checklist rather than a signature. */
+export const readFormInvitation = (token: string): SignInvitation => openLink(token, "form");
 
 /**
  * A signature made by whoever holds the link.
@@ -943,6 +1187,46 @@ export const PAGE_CSS = `
     .copy-link:hover { border-color: #9ca3af; color: var(--ink); }
     button.copy-link { font-family: inherit; }
 
+    /* The two dialogs — remote signing, and duplicating. Same furniture. */
+    dialog { width: min(34rem, calc(100vw - 2rem)); max-height: min(86vh, 48rem); overflow-y: auto;
+      border: 1px solid var(--line); border-radius: 12px; padding: 1.1rem 1.2rem 1.2rem;
+      color: var(--ink); background: #fff; box-shadow: 0 12px 40px rgba(0,0,0,0.18); }
+    dialog::backdrop { background: rgba(17, 24, 39, 0.45); }
+    dialog h2 { margin: 0 0 0.15rem; font-size: 1.05rem; letter-spacing: -0.01em; }
+    dialog h3 { margin: 1.1rem 0 0.2rem; font-size: 0.92rem; }
+    dialog .what { margin: 0 0 0.5rem; font-size: 0.85rem; font-weight: 600; }
+    dialog .why { margin: 0 0 0.8rem; color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
+    dialog .close-row { float: right; margin: -0.4rem -0.4rem 0 0; }
+    dialog .x { background: none; border: 0; font-size: 1.3rem; line-height: 1; color: var(--muted);
+      cursor: pointer; padding: 0.2rem 0.35rem; }
+    dialog .x:hover { color: var(--ink); }
+    dialog .links:not(:empty) { border-top: 1px solid var(--line); margin-top: 0.8rem; }
+    dialog .fields { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+    dialog .field { flex: 1 1 12rem; }
+    dialog label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.25rem; }
+    dialog input[type="text"], dialog input[type="email"] { width: 100%; padding: 0.45rem 0.6rem;
+      border: 1px solid #d1d5db; border-radius: 6px; font: inherit; font-size: 0.9rem; background: #fff; }
+    dialog input:focus { outline: 2px solid #93c5fd; outline-offset: -1px; border-color: transparent; }
+    dialog label.check { display: flex; align-items: flex-start; gap: 0.5rem; margin-top: 0.7rem;
+      text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 0.82rem; color: #374151; }
+    dialog label.check input { margin-top: 0.15rem; }
+    dialog .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.7rem; }
+    dialog .row button { background: #1f2937; color: #fff; border: 0; border-radius: 6px;
+      padding: 0.42rem 0.85rem; font: 600 0.82rem system-ui, sans-serif; cursor: pointer; }
+    dialog .row button:hover { background: #374151; }
+    dialog .row button[disabled] { opacity: 0.6; cursor: default; }
+    dialog .hint { color: var(--muted); font-size: 0.78rem; }
+    dialog .err { color: #991b1b; font-size: 0.8rem; }
+    dialog .also { margin: 0.9rem 0 0; padding-top: 0.7rem; border-top: 1px solid var(--line);
+      color: var(--muted); font-size: 0.8rem; }
+    /* "Fill it in here" — the other half of the choice, and a link, not a form. */
+    dialog .choice { display: block; border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.75rem;
+      text-decoration: none; color: var(--ink); font-weight: 600; font-size: 0.88rem; }
+    dialog .choice:hover { border-color: #9ca3af; background: #f9fafb; }
+    dialog .choice span { display: block; margin-top: 0.15rem; color: var(--muted); font-weight: 400;
+      font-size: 0.8rem; }
+
     /* Links sent out so somebody who isn't here can sign it themselves. */
     .sign-link { border-top: 1px solid #f1f2f4; padding: 0.7rem 0; }
     .sign-link .who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin: 0; }
@@ -962,7 +1246,8 @@ export const PAGE_CSS = `
       border-radius: 6px; font: inherit; font-size: 0.78rem; color: #374151; background: #f9fafb; }
     .sign-link .url button { flex: none; background: #fff; color: #374151; border: 1px solid #d1d5db;
       border-radius: 6px; padding: 0.3rem 0.6rem; font: 600 0.78rem system-ui, sans-serif; cursor: pointer; }
-    .sign-link .url button:hover { border-color: #9ca3af; color: var(--ink); }`;
+    .sign-link .url button:hover { border-color: #9ca3af; color: var(--ink); }
+    .sign-link.form { border-left: 2px solid #c4b5fd; padding-left: 0.6rem; }`;
 
 const LIST_CSS = `
     .toolbar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0 0 0.9rem; }
@@ -994,37 +1279,11 @@ const LIST_CSS = `
     td.actions { text-align: right; white-space: nowrap; }
     td.actions .stack { display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem; }
 
-    /* Remote signing, opened from a row. A dialog rather than another page:
-       sending a link is a thirty-second job, and it shouldn't cost the place
-       in the list somebody scrolled to. */
-    #remote-sign { width: min(34rem, calc(100vw - 2rem)); max-height: min(86vh, 48rem); overflow-y: auto;
-      border: 1px solid var(--line); border-radius: 12px;
-      padding: 1.1rem 1.2rem 1.2rem; color: var(--ink); background: #fff; box-shadow: 0 12px 40px rgba(0,0,0,0.18); }
-    #remote-sign::backdrop { background: rgba(17, 24, 39, 0.45); }
-    #remote-sign h2 { margin: 0 0 0.15rem; font-size: 1.05rem; letter-spacing: -0.01em; }
-    #remote-sign .what { margin: 0 0 0.5rem; font-size: 0.85rem; font-weight: 600; }
-    #remote-sign .why { margin: 0 0 0.8rem; color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
-    #remote-sign .close-row { float: right; margin: -0.4rem -0.4rem 0 0; }
-    #remote-sign .x { background: none; border: 0; font-size: 1.3rem; line-height: 1; color: var(--muted);
-      cursor: pointer; padding: 0.2rem 0.35rem; }
-    #remote-sign .x:hover { color: var(--ink); }
-    #remote-sign .links:not(:empty) { border-top: 1px solid var(--line); margin-bottom: 0.6rem; }
-    #remote-sign .fields { display: flex; flex-wrap: wrap; gap: 0.7rem; }
-    #remote-sign .field { flex: 1 1 12rem; }
-    #remote-sign label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--muted); font-weight: 600; margin: 0 0 0.25rem; }
-    #remote-sign input { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px;
-      font: inherit; font-size: 0.9rem; background: #fff; }
-    #remote-sign input:focus { outline: 2px solid #93c5fd; outline-offset: -1px; border-color: transparent; }
-    #remote-sign .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.7rem; }
-    #remote-sign .row button { background: #1f2937; color: #fff; border: 0; border-radius: 6px;
-      padding: 0.42rem 0.85rem; font: 600 0.82rem system-ui, sans-serif; cursor: pointer; }
-    #remote-sign .row button:hover { background: #374151; }
-    #remote-sign .row button[disabled] { opacity: 0.6; cursor: default; }
-    #remote-sign .hint { color: var(--muted); font-size: 0.78rem; }
-    #remote-sign .err { color: #991b1b; font-size: 0.8rem; }
-    #remote-sign .also { margin: 0.9rem 0 0; padding-top: 0.7rem; border-top: 1px solid var(--line);
-      color: var(--muted); font-size: 0.8rem; }
+    /* Opened from a row rather than being a page of its own: sending a link is
+       a thirty-second job, and it shouldn't cost the place in the list somebody
+       scrolled to. The furniture is in PAGE_CSS, shared with the other one. */
+    #remote-sign .links:not(:empty) { margin-bottom: 0.6rem; margin-top: 0; }
+
     .flag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.75rem;
       font-weight: 600; margin: 0 0.25rem 0.2rem 0; white-space: nowrap; }
     .flag.poor { background: #fee2e2; color: #991b1b; }
@@ -1432,19 +1691,28 @@ export function renderLaterSignature(sig: LaterSignature, user: User): string {
  */
 export function renderSignLink(link: SignLink, user: User): string {
   const mine = link.createdBy === user.username || canEditTenants(user);
+  const form = link.kind === "form";
   const said = {
     waiting: `Waiting &middot; expires ${escapeHtml(signedDate(link.expiresAt))}`,
-    signed: `Signed ${escapeHtml(signedDate(link.usedAt ?? link.createdAt))}`,
+    signed: `${form ? "Filled in" : "Signed"} ${escapeHtml(signedDate(link.usedAt ?? link.createdAt))}`,
     expired: `Expired ${escapeHtml(signedDate(link.expiresAt))}`,
     revoked: `Withdrawn ${escapeHtml(signedDate(link.revokedAt ?? link.createdAt))}`,
   }[link.state];
-  const url = signLinkUrl(link.token);
+  const url = signLinkUrl(link);
   return `
-      <article class="sign-link" data-link="${link.id}">
-        <p class="who">${escapeHtml(link.signerName)}<span class="role">${escapeHtml(link.role)}</span>
+      <article class="sign-link${form ? " form" : ""}" data-link="${link.id}">
+        <p class="who">${escapeHtml(link.signerName)}<span class="role">${
+          form
+            ? `new checklist${link.fresh ? ", blank" : ", copied from this one"}`
+            : escapeHtml(link.role)
+        }</span>
           <span class="state ${link.state}">${said}</span></p>
         <p class="at">Sent by ${escapeHtml(link.createdByName || link.createdBy)} on
           ${escapeHtml(signedDate(link.createdAt))}${
+            form && link.resultId
+              ? ` &middot; <a href="/inspections/${escapeAttr(link.resultId)}">open what came back</a>`
+              : ""
+          }${
             mine && link.state === "waiting"
               ? `<button type="button" class="drop" data-act="revoke-link">Withdraw</button>`
               : ""
@@ -1744,7 +2012,13 @@ const REMOTE_SIGN_JS = `
     links.innerHTML = '<p class="hint" style="padding:0.6rem 0">Looking&hellip;</p>';
     fetch("/api/inspections/" + current + "/sign-links")
       .then(function (res) { return res.ok ? res.json() : { links: [] }; })
-      .then(function (data) { links.innerHTML = (data.links || []).join(""); })
+      .then(function (data) {
+        // Signatures here; the checklists sent out live in the other dialog.
+        links.innerHTML = (data.links || [])
+          .filter(function (l) { return l.kind !== "form"; })
+          .map(function (l) { return l.html; })
+          .join("");
+      })
       .catch(function () { links.innerHTML = ""; });
   }
 
@@ -1830,6 +2104,163 @@ const REMOTE_SIGN_JS = `
   });
 })();`;
 
+/**
+ * Duplicating a checklist, and deciding who walks it.
+ *
+ * The office has been able to duplicate one onto its own laptop since the
+ * move-out reports started; what was missing was the other half of the
+ * question. A move-out is walked by the tenant as often as by us, and they
+ * cannot open anything behind the sign-in — so the same duplicate goes out as a
+ * link, addressed to whoever is living there now.
+ *
+ * One dialog, used by the list and by the report, so the two can't drift.
+ */
+const DUPLICATE_DIALOG = `
+  <dialog id="duplicate">
+    <form method="dialog" class="close-row"><button class="x" aria-label="Close">&times;</button></form>
+    <h2>Duplicate this checklist</h2>
+    <p class="what" id="dup-what"></p>
+    <p class="why">The property, its rooms, the notes about which room is which and what was recorded
+      last time all come over. Nothing about the report being copied changes.</p>
+
+    <a class="choice" id="dup-here" href="#">Fill it in here
+      <span>On this device, now &mdash; the walkthrough form opens with everything already in it.</span></a>
+
+    <h3>Or send it to the tenant</h3>
+    <p class="why">They get the walkthrough itself, not just a signature box: the rooms, the ratings,
+      their own photos, and they sign at the end. No account needed. The link works once, expires in
+      a fortnight, and can be withdrawn until it is used.</p>
+    <div class="fields">
+      <div class="field">
+        <label for="dup-name">Tenant&rsquo;s full name</label>
+        <input id="dup-name" type="text" maxlength="120" autocomplete="off" placeholder="Their full name" />
+      </div>
+      <div class="field">
+        <label for="dup-email">Their email</label>
+        <input id="dup-email" type="email" maxlength="160" autocomplete="off" placeholder="them@example.com" />
+      </div>
+    </div>
+    <label class="check" for="dup-fresh">
+      <input type="checkbox" id="dup-fresh" />
+      <span>Start it blank &mdash; same property and rooms, none of last time&rsquo;s answers or photos</span>
+    </label>
+    <div class="row">
+      <button type="button" id="dup-make">Create the link</button>
+      <span class="hint">Nothing is sent for you &mdash; copy it into your own email or text.</span>
+      <span class="err" id="dup-error" hidden></span>
+    </div>
+    <div id="dup-links" class="links"></div>
+  </dialog>`;
+
+const DUPLICATE_JS = `
+(function () {
+  var dialog = document.getElementById("duplicate");
+  if (!dialog || !dialog.showModal) return;
+  var what = document.getElementById("dup-what");
+  var here = document.getElementById("dup-here");
+  var name = document.getElementById("dup-name");
+  var email = document.getElementById("dup-email");
+  var fresh = document.getElementById("dup-fresh");
+  var make = document.getElementById("dup-make");
+  var error = document.getElementById("dup-error");
+  var links = document.getElementById("dup-links");
+  var current = null;
+
+  function problem(message) {
+    error.textContent = message || "";
+    error.hidden = !message;
+  }
+
+  function load() {
+    links.innerHTML = "";
+    fetch("/api/inspections/" + current + "/sign-links")
+      .then(function (res) { return res.ok ? res.json() : { links: [] }; })
+      .then(function (data) {
+        links.innerHTML = (data.links || [])
+          .filter(function (l) { return l.kind === "form"; })
+          .map(function (l) { return l.html; })
+          .join("");
+      })
+      .catch(function () { links.innerHTML = ""; });
+  }
+
+  document.addEventListener("click", function (e) {
+    var open = e.target.closest && e.target.closest('[data-act="duplicate"]');
+    if (!open) return;
+    e.preventDefault();
+    current = open.dataset.id;
+    what.textContent = open.dataset.address + " \\u2014 last walked with " + open.dataset.tenant;
+    here.setAttribute("href", open.dataset.copy);
+    // The tenant being copied is the likeliest person to be sending it to, and
+    // the likeliest thing to change. Prefilled and selected: correct it, or
+    // type over it.
+    name.value = open.dataset.tenant || "";
+    email.value = open.dataset.email || "";
+    fresh.checked = false;
+    problem("");
+    load();
+    dialog.showModal();
+    setTimeout(function () { name.focus(); name.select(); }, 30);
+  });
+
+  make.addEventListener("click", function () {
+    if (!name.value.trim()) { problem("Who is the checklist for?"); name.focus(); return; }
+    if (!email.value.trim()) { problem("The form needs an email address to send their copy to."); email.focus(); return; }
+    make.disabled = true;
+    problem("");
+    fetch("/api/inspections/" + current + "/form-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.value.trim(), email: email.value.trim(), fresh: fresh.checked })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That link wasn't created.");
+          return data;
+        });
+      })
+      .then(function (data) {
+        links.insertAdjacentHTML("beforeend", data.link);
+        var field = links.querySelector(".sign-link:last-child .url input");
+        if (field) {
+          field.focus();
+          field.select();
+          if (navigator.clipboard) navigator.clipboard.writeText(field.value).catch(function () {});
+        }
+      })
+      .catch(function (err) { problem(err.message); })
+      .then(function () { make.disabled = false; });
+  });
+
+  links.addEventListener("click", function (e) {
+    var copy = e.target.closest('button[data-act="copy-link"]');
+    if (copy) {
+      var field = copy.parentElement.querySelector("input");
+      field.focus();
+      field.select();
+      var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(field.value).then(done, function () {});
+      else { try { document.execCommand("copy"); done(); } catch (err) { /* selected either way */ } }
+      return;
+    }
+    var withdraw = e.target.closest('button[data-act="revoke-link"]');
+    if (!withdraw) return;
+    var row = withdraw.closest(".sign-link");
+    if (!window.confirm("Withdraw this checklist link? Whoever has it will no longer be able to open it.")) return;
+    withdraw.disabled = true;
+    problem("");
+    fetch("/api/inspections/" + current + "/sign-links/" + row.dataset.link, { method: "DELETE" })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That link wasn't withdrawn.");
+          return data;
+        });
+      })
+      .then(function (data) { row.outerHTML = data.link; })
+      .catch(function (err) { withdraw.disabled = false; problem(err.message); });
+  });
+})();`;
+
 function page(title: string, nav: string, navCss: string, css: string, body: string): string {
   return `<!doctype html>
 <html>
@@ -1866,7 +2297,7 @@ function listRow(
   i: Inspection,
   notes: number,
   signed: { count: number; who: string } | undefined,
-  awaiting: number
+  awaiting: { sign: number; form: number } | undefined
 ): string {
   const c = i.checklist;
   const t = tally(c);
@@ -1888,8 +2319,14 @@ function listRow(
       ? `<span class="flag sign">${signed.count} signed later</span>`
       : "") +
     // Something is out with somebody and hasn't come back. That is a state
-    // worth seeing from the list, since it is the thing being waited on.
-    (awaiting ? `<span class="flag awaiting">${awaiting} awaiting signature</span>` : "");
+    // worth seeing from the list, since it is the thing being waited on — and
+    // a signature and a whole checklist are different waits.
+    (awaiting?.sign ? `<span class="flag awaiting">${awaiting.sign} awaiting signature</span>` : "") +
+    (awaiting?.form
+      ? `<span class="flag awaiting">${awaiting.form} checklist${
+          awaiting.form === 1 ? "" : "s"
+        } out</span>`
+      : "");
 
   // Defects first, with their notes, then everything else that was written.
   const entries = [
@@ -1955,8 +2392,12 @@ function listRow(
               data-id="${escapeAttr(i.id)}" data-address="${escapeAttr(c.address)}"
               data-tenant="${escapeAttr(c.name)}" data-agent="${escapeAttr(c.agentName ?? "")}"
               title="Send someone a link so they can sign this report themselves">Remote signing</button>
-            <a class="copy-link" href="${escapeAttr(copyUrl(i.id))}" target="_blank" rel="noopener"
-              title="Start a new checklist from this one — same property, rooms, notes and photos">Duplicate</a>
+            <button type="button" class="copy-link" data-act="duplicate"
+              data-id="${escapeAttr(i.id)}" data-address="${escapeAttr(c.address)}"
+              data-tenant="${escapeAttr(c.name)}" data-email="${escapeAttr(c.email)}"
+              data-copy="${escapeAttr(copyUrl(i.id))}"
+              title="Start a new checklist from this one — fill it in here, or send it to the tenant">
+              Duplicate</button>
           </div></td>
         </tr>`;
 }
@@ -1999,7 +2440,7 @@ export function renderInspectionsList(nav: string, navCss: string): string {
         ${
           inspections.length
             ? inspections
-                .map((i) => listRow(i, counts.get(i.id) ?? 0, signed.get(i.id), awaiting.get(i.id) ?? 0))
+                .map((i) => listRow(i, counts.get(i.id) ?? 0, signed.get(i.id), awaiting.get(i.id)))
                 .join("") +
               `\n        <tr class="empty no-match" hidden><td colspan="6">No inspection matches that.</td></tr>`
             : `<tr class="empty"><td colspan="6">No inspections have been signed yet.</td></tr>`
@@ -2040,8 +2481,11 @@ export function renderInspectionsList(nav: string, navCss: string): string {
       sign on this device.</p>
   </dialog>
 
+  ${DUPLICATE_DIALOG}
+
   <script>${LIST_JS}</script>
-  <script>${REMOTE_SIGN_JS}</script>`;
+  <script>${REMOTE_SIGN_JS}</script>
+  <script>${DUPLICATE_JS}</script>`;
   return page("Inspections", nav, navCss, LIST_CSS, body);
 }
 
@@ -2150,10 +2594,12 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
           ? `Sign as ${escapeHtml(c.agentName)} &mdash; or anyone else`
           : "Sign this report"
       }</a>
-      <a class="copy-link" href="${escapeAttr(copyUrl(inspection.id))}" target="_blank" rel="noopener"
-        style="margin-top:0.25rem">Duplicate for the move-out</a>
-      <span class="plain">Opens a new checklist with this property, agent, rooms,
-        notes and photos already in it &mdash; change the tenant and what has changed.</span>
+      <button type="button" class="copy-link" data-act="duplicate" style="margin-top:0.25rem"
+        data-id="${escapeAttr(inspection.id)}" data-address="${escapeAttr(c.address)}"
+        data-tenant="${escapeAttr(c.name)}" data-email="${escapeAttr(c.email)}"
+        data-copy="${escapeAttr(copyUrl(inspection.id))}">Duplicate for the move-out</button>
+      <span class="plain">A new checklist with this property, agent, rooms, notes and photos already
+        in it &mdash; filled in here, or sent to the tenant to walk and sign themselves.</span>
     </div>
   </div>
 
@@ -2312,6 +2758,8 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
     </div>
   </section>
   <script>${NOTES_JS}</script>
+  ${DUPLICATE_DIALOG}
+  <script>${DUPLICATE_JS}</script>
 
   <section class="card">
     <h2>What was certified</h2>
@@ -2417,14 +2865,27 @@ ${body}
 }
 
 /** Why a link doesn't work, said plainly and without a way to poke at it. */
-export function renderSignRefusal(reason: "unknown" | "signed" | "expired" | "revoked" | "gone"): string {
-  const said = {
-    unknown: ["This link isn’t valid", "It may have been mistyped, or it may never have existed."],
-    signed: ["This report has been signed", "That link has already been used. Nothing more is needed."],
-    expired: ["This link has expired", "Signing links last two weeks, and this one is past that."],
-    revoked: ["This link was withdrawn", "The office cancelled it."],
-    gone: ["That report is no longer here", "It may have been removed since the link was sent."],
-  }[reason];
+export function renderSignRefusal(
+  reason: "unknown" | "signed" | "expired" | "revoked" | "gone",
+  kind: "sign" | "form" = "sign"
+): string {
+  const said = (
+    kind === "form"
+      ? {
+          unknown: ["This link isn’t valid", "It may have been mistyped, or it may never have existed."],
+          signed: ["This checklist has been filled in", "That link has already been used and signed. Nothing more is needed."],
+          expired: ["This link has expired", "Checklist links last two weeks, and this one is past that."],
+          revoked: ["This link was withdrawn", "The office cancelled it."],
+          gone: ["That property’s record is no longer here", "It may have been removed since the link was sent."],
+        }
+      : {
+          unknown: ["This link isn’t valid", "It may have been mistyped, or it may never have existed."],
+          signed: ["This report has been signed", "That link has already been used. Nothing more is needed."],
+          expired: ["This link has expired", "Signing links last two weeks, and this one is past that."],
+          revoked: ["This link was withdrawn", "The office cancelled it."],
+          gone: ["That report is no longer here", "It may have been removed since the link was sent."],
+        }
+  )[reason];
   return signPage(
     said[0],
     `<header><div class="wrap"><h1>Property condition report</h1></div></header>

@@ -78,10 +78,11 @@ and the `Host` it was compared against.
 
 Everything here is tenant PII — names, phones, home addresses, rent, and the unit
 door codes in the Leases sheet — so every route requires a signed-in user, with
-one deliberate exception: `/sign/<token>`, where somebody outside the office is
-asked to sign one inspection. That link is the credential, it buys that one
-report and nothing else, and it expires and can be withdrawn — see
-[Sending someone a link to sign](#sending-someone-a-link-to-sign).
+two deliberate exceptions, both of them links the office sends out: `/sign/<token>`,
+where somebody outside the office signs one inspection, and `/form/<token>`,
+where a tenant fills in a whole checklist for one property. In both the link is
+the credential, it buys that one thing and nothing else, and it expires, is
+spent once and can be withdrawn.
 
 **First run:** with no accounts in the database, opening the app on this machine
 sends you to `/setup` to create the first one, and signs you straight in. That
@@ -921,7 +922,8 @@ items it covers, how many items were marked **poor** or left blank, what photos
 and videos came with it, and how many comments have been added since it was
 signed. The last column holds the PDF, **Remote signing** — a
 link out to somebody who has to sign it and has no account here — and
-**Duplicate**, which starts the move-out walkthrough as a copy of this one.
+**Duplicate**, which starts the move-out walkthrough as a copy of this one,
+either here or on a link to the tenant.
 
 **Defects & notes** is a column of its own, and it is the reason the page
 exists: every item rated Poor or Fair with the note that came with it, worst
@@ -1040,6 +1042,45 @@ that captured it and the remark. The addendum's own heading and preamble say
 what is on it: that everything there was added later, and that nothing on it
 changes what was certified above. The list marks a report somebody signed
 afterwards with **N signed later**, and the filter box matches those names.
+
+#### Sending the tenant the whole checklist
+
+**Duplicate** on a row (and on the report) opens a dialog with the question that
+was missing: who walks it. *Fill it in here* is what it always did — the
+walkthrough form on this device, everything copied in. *Or send it to the
+tenant* makes a link to the same duplicate, addressed to whoever is living there
+now.
+
+What they get is the walkthrough itself, not a signature box: the rooms, the
+ratings, their own photos, the drafts saved as they go, and they sign at the
+end. What comes back is a checklist of its own, and the report that sent it
+points at it — **open what came back**.
+
+The tenant's name and email are the office's to set, since they are what makes
+it a different tenancy from the one being copied; the tenant can still correct
+them on the form, because the office types other people's names wrong. **Start
+it blank** keeps the property, the rooms and the notes about which bedroom is
+which, and drops last time's answers and photos — a move-in for a new tenant,
+rather than a move-out to compare.
+
+The link is served at `/form/<token>` and is the same proxy that puts the form
+at `/checklist` for the office (`proxyTenantForm`), authorised by the token
+instead of a session. Being an unauthenticated door onto :3100, it is held to an
+**allowlist**: the form's nine paths, plus two that are checked against the link
+itself rather than matched by shape — the copy it may read is the one report the
+link was made from, and the only PDF it may fetch is the one this link produced.
+Everything else on :3100 answers 404 through it.
+
+Two smaller things happen in that proxy. The copy handed to the page has the
+tenant's own name and email written into it, and the **previous** tenant's name
+taken out — who signed it last time is the office's business, not theirs. And a
+submission that comes back `201` spends the link and records what it produced.
+A spent link still serves that one PDF, because the screen at the end of a
+walkthrough offers it, and handing somebody a dead link to what they just signed
+would be a poor way to end.
+
+A row with one out is flagged **N checklists out**, alongside **N awaiting
+signature** for the other kind.
 
 #### Sending someone a link to sign
 

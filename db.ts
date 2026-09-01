@@ -198,6 +198,29 @@ db.run(`
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_inspection_sign_links ON inspection_sign_links(checklist_id, id)`);
 
+/**
+ * Two kinds of link go out now, and they are the same object in every way that
+ * matters — made for a named person, expiring, revocable, spent once — so they
+ * share a table rather than a second one that would drift.
+ *
+ * `sign` is a signature on the report as it stands. `form` is a whole checklist
+ * to fill in: the property copied from this one, addressed to a new tenant, who
+ * walks the rooms themselves and signs at the end. What that produces is a new
+ * checklist of its own, and `result_checklist_id` is how the report that sent
+ * it can point at the one that came back.
+ */
+for (const [column, definition] of [
+  ["kind", `TEXT NOT NULL DEFAULT 'sign'`],
+  ["tenant_email", `TEXT NOT NULL DEFAULT ''`],
+  ["fresh", `INTEGER NOT NULL DEFAULT 0`],
+  ["result_checklist_id", `TEXT`],
+] as const) {
+  const columns = db.query(`PRAGMA table_info(inspection_sign_links)`).all() as { name: string }[];
+  if (!columns.some((c) => c.name === column)) {
+    db.run(`ALTER TABLE inspection_sign_links ADD COLUMN ${column} ${definition}`);
+  }
+}
+
 // Added when signing moved off this machine; existing databases pick it up here.
 if (
   !(db.query(`PRAGMA table_info(inspection_signatures)`).all() as { name: string }[])
