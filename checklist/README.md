@@ -71,7 +71,9 @@ which also means nobody in the office can open it in a browser. Anything the
 office needs from it therefore comes through the CRM, which serves everything
 under its own `/checklist` and passes it on here with that prefix removed.
 
-The CRM sends `X-Forwarded-Prefix: /checklist`, and the page is stamped with it
+The CRM sends `X-Forwarded-Prefix: /checklist` — or `/form/<token>` when the
+form is being filled in by a tenant on a link it sent, which is why a prefix may
+be two segments deep — and the page is stamped with it
 (`__BASE__`, alongside `__BUILD__`): every path the page asks for — templates,
 rooms, uploads, drafts, the submission, the PDF, the thumbnails — carries the
 prefix, so the same one file works at the root of :3100 and under a path
@@ -95,9 +97,10 @@ move-out report ends up describing a slightly different property from the
 move-in report it is supposed to be compared against.
 
 So the page can start as a copy of a checklist that has already been signed.
-Open it as `/?copy=<checklist id>` — which is what the **Duplicate** link on
-every signed report in the CRM points at, as `/checklist/?copy=<id>` through the
-prefix above — and it comes up with:
+Open it as `/?copy=<checklist id>` — which is what **Duplicate** on every signed
+report in the CRM points at, as `/checklist/?copy=<id>` for the office through
+the prefix above, or `/form/<token>/?copy=<id>` when the CRM has sent the
+duplicate to the tenant to walk themselves — and it comes up with:
 
 - the **property**: address, bedroom and bathroom counts, furnished or not;
 - the **agent** who walked it;
@@ -107,6 +110,10 @@ prefix above — and it comes up with:
 - the **photos and videos**, referred to again rather than uploaded a second
   time. Both checklists point at the same file, which is why the boot-time
   sweep only deletes an upload nothing refers to.
+
+`?fresh=1` keeps the property, the rooms and the notes about which room is which
+and drops the answers — a move-in for a new tenant rather than a move-out to
+compare against. The response says which it was, so the page can say so too.
 
 What does not come over is anything that made the first one a record: no
 signature, no certification, no signing time. Those are made afresh, by whoever

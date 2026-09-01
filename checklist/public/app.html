@@ -911,11 +911,17 @@ function applyCopy(d) {
   var from = d.from || {};
   var signed = from.signedAt ? new Date(from.signedAt) : null;
   $("restored").classList.add("copied");
-  $("restored-text").textContent =
-    "Copied from the checklist " + (from.name ? from.name + " signed" : "signed") +
-    (signed ? " on " + signed.toLocaleDateString() : " earlier") + ". Every room, rating, note and " +
-    "photo came with it. Change the tenant's name if this is a new tenant, then work through the " +
-    "property and change what has changed.";
+  $("restored-text").textContent = d.fresh
+    // A blank copy borrowed the property and nothing else, so there is nothing
+    // to correct — saying "change what has changed" would be a lie about what
+    // is on screen.
+    ? "The rooms for this property are already set up" +
+      (signed ? ", from the checklist last signed on " + signed.toLocaleDateString() : "") +
+      ". Nothing has been filled in: work through the property and rate what you find."
+    : "Copied from the checklist " + (from.name ? from.name + " signed" : "signed") +
+      (signed ? " on " + signed.toLocaleDateString() : " earlier") + ". Every room, rating, note and " +
+      "photo came with it. Check the name at the top is right, then work through the property and " +
+      "change what has changed.";
   $("restored").hidden = false;
 
   renderCounts();

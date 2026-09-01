@@ -309,15 +309,19 @@ async function validate(body: any): Promise<{ checklist: Omit<Checklist, "id"> }
  * under /checklist, and says so in X-Forwarded-Prefix; the page stamps the
  * prefix onto every path it asks for.
  *
+ * Two segments are allowed, not one, because a link handed to a tenant carries
+ * its authority in the path: the CRM serves the form at /checklist for the
+ * office and at /form/<token> for somebody outside it.
+ *
  * Trusted only as far as it is checked: it is written into the page, so it is
- * held to one leading slash and a short run of unremarkable characters, and
+ * held to a leading slash and short runs of unremarkable characters, and
  * anything else is treated as no prefix at all. A tenant opening the form
  * directly sends no such header and gets an empty string, which is the path
  * this app has always served.
  */
 function basePrefix(req: Request): string {
   const raw = (req.headers.get("X-Forwarded-Prefix") ?? "").trim().replace(/\/+$/, "");
-  return /^\/[A-Za-z0-9._~-]{1,40}$/.test(raw) ? raw : "";
+  return /^(\/[A-Za-z0-9._~-]{1,80}){1,2}$/.test(raw) ? raw : "";
 }
 
 const page = Bun.file("public/app.html");
@@ -535,6 +539,7 @@ async function handle(req: Request): Promise<Response> {
     const row = readChecklist.get(copy[1]) as { data: string } | undefined;
     if (!row) return Response.json({ error: "No such checklist." }, { status: 404 });
     const c = JSON.parse(row.data) as Checklist;
+    const fresh = url.searchParams.get("fresh") === "1";
 
     // Photos and videos are referred to, not duplicated: both checklists point
     // at the same upload, which is why the boot-time sweep only removes a file
@@ -562,6 +567,9 @@ async function handle(req: Request): Promise<Response> {
         bathrooms: c.bathrooms,
         // Never stored as a flag: the section either got built or it didn't.
         furnished: (c.rooms ?? []).some((r) => r.kind === "furnishings"),
+        // So the page can say what it is: last time's walkthrough to correct,
+        // or an empty checklist that only borrowed the property.
+        fresh,
         agentName: c.agentName ?? "",
         rooms: (c.rooms ?? []).map((r) => ({
           kind: r.kind,
@@ -569,12 +577,15 @@ async function handle(req: Request): Promise<Response> {
           notes: r.notes ?? "",
           items: (r.items ?? []).map((i) => ({
             label: i.label,
-            condition: i.condition ?? "",
-            notes: i.notes ?? "",
+            // ?fresh=1 keeps the property and drops the answers: the rooms,
+            // the items and the notes about which bedroom is which are worth
+            // copying to a new tenancy; last tenant's ratings are not.
+            condition: fresh ? "" : i.condition ?? "",
+            notes: fresh ? "" : i.notes ?? "",
           })),
         })),
-        generalNotes: c.generalNotes ?? "",
-        media,
+        generalNotes: fresh ? "" : c.generalNotes ?? "",
+        media: fresh ? [] : media,
       },
       { headers: { "Cache-Control": "no-store, private" } }
     );
