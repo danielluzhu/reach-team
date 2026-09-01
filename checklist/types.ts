@@ -39,4 +39,12 @@ export type Checklist = {
   /** The agent counter-signs where one is present; both are absent otherwise. */
   agentName?: string;
   agentSignature?: string;
+  /**
+   * Anyone else who signed at the walkthrough: a co-tenant, a witness, the
+   * landlord themselves. Two fixed slots never covered a house share, and the
+   * alternative — everybody else signing the printed copy afterwards — is how
+   * a report ends up with signatures nobody can produce. Absent when nobody
+   * else signed, which is the usual case.
+   */
+  extraSignatures?: { name: string; role: string; signature: string }[];
 };

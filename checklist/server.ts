@@ -119,6 +119,7 @@ const GENERAL_NOTES_MAX = 4000; // the free-text section at the end of the walkt
 const MAX_ROOMS = 40;
 const MAX_ITEMS = 60;
 const MAX_COUNT = 12; // bedrooms or bathrooms
+const MAX_SIGNERS = 6; // besides the tenant and the agent
 const CONDITION_MAX = Math.max(...CONDITIONS.map((c) => c.length));
 
 const HTML_HEADERS = {
@@ -135,6 +136,10 @@ const HTML_HEADERS = {
 };
 
 const clean = (value: unknown, max = TEXT_MAX) => String(value ?? "").trim().slice(0, max);
+
+/** A signature is the thing that makes this a record rather than a draft. */
+const isSignature = (value: string) =>
+  /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(value) && value.length >= 200;
 
 const count = (value: unknown) => {
   const n = Math.round(Number(value));
@@ -235,10 +240,6 @@ async function validate(body: any): Promise<{ checklist: Omit<Checklist, "id"> }
     }
   }
 
-  // The signature is the thing that makes this a record rather than a draft.
-  const isSignature = (value: string) =>
-    /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(value) && value.length >= 200;
-
   const signature = String(body.signature ?? "");
   if (!isSignature(signature)) return { error: "A signature is required." };
 
@@ -261,6 +262,29 @@ async function validate(body: any): Promise<{ checklist: Omit<Checklist, "id"> }
     return { error: "The agent's signature didn't come through." };
   }
 
+  /**
+   * Anyone else who signed on the day. The same rules as the agent's: a mark
+   * has to say whose it is, so a name and a role come with it. Bounded like
+   * everything else here — a walkthrough has a handful of people at it, not a
+   * hundred.
+   */
+  const extraSignatures: { name: string; role: string; signature: string }[] = [];
+  if (body.extraSignatures !== undefined) {
+    if (!Array.isArray(body.extraSignatures)) return { error: "The other signatures weren't readable." };
+    if (body.extraSignatures.length > MAX_SIGNERS) {
+      return { error: `At most ${MAX_SIGNERS} other people can sign here.` };
+    }
+    for (const entry of body.extraSignatures) {
+      const who = clean(entry?.name, 120);
+      const role = clean(entry?.role, 80);
+      const mark = String(entry?.signature ?? "");
+      if (!who) return { error: "Every other signature needs the name of who signed it." };
+      if (!role) return { error: `Say what ${who} is signing as.` };
+      if (!isSignature(mark)) return { error: `${who}'s signature didn't come through.` };
+      extraSignatures.push({ name: who, role, signature: mark });
+    }
+  }
+
   return {
     checklist: {
       name, email, address, bedrooms, bathrooms, rooms, signature,
@@ -270,6 +294,7 @@ async function validate(body: any): Promise<{ checklist: Omit<Checklist, "id"> }
       signedAt: new Date().toISOString(),
       ...(agentName ? { agentName } : {}),
       ...(agentSignature ? { agentSignature } : {}),
+      ...(extraSignatures.length ? { extraSignatures } : {}),
     },
   };
 }

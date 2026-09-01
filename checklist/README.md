@@ -54,7 +54,11 @@ authentication** — see "Before this goes anywhere public".
    Continuing is blocked while an upload is in flight.
 3. **Review and sign** — a summary, a tally (rated / poor / left blank), the
    certification, and signature canvases backed at device pixel ratio so a
-   finger or stylus line is sharp. Submit renders the PDF and hands back a link.
+   finger or stylus line is sharp. Besides the tenant and the agent, **anyone
+   else standing there can sign**: a co-tenant, a witness, the landlord. And
+   anyone who is *not* there needn't hold it up — the office can take their
+   signature on the finished report afterwards, which the card says in as many
+   words. Submit renders the PDF and hands back a link.
 
 The name field **suggests** "Dan Zhu" as a placeholder rather than filling it
 in: the field starts empty, so a name only reaches a signed checklist by being
@@ -195,6 +199,21 @@ after that file changes.
   nobody can identify is worse than none. Clearing the agent name and going
   back to the signature step also clears any signature already drawn, so the
   two can't disagree.
+
+- **Anyone else at the walkthrough** can sign too, up to six of them: a name, a
+  role and a mark, taken one at a time in the same kind of canvas and printed in
+  the same grid two to a row after the tenant and the agent. Held to the agent's
+  rule — a mark has to say whose it is, so the name and the role come with it,
+  checked in the page and again on the server.
+
+  They are part of what was signed, which is the difference between these and a
+  signature the CRM takes on a report **afterwards**: those print in an addendum
+  after the signed pages, because they were not there to be certified.
+
+  Like every signature here, they are kept in memory only and never written to a
+  draft: a signature has to be made, not restored from storage. Somebody who
+  isn't at the walkthrough is not a problem to solve on this page — the report
+  can be signed later from the CRM.
 
 > **Not drafted by a lawyer.** Washington's Residential Landlord-Tenant Act
 > (RCW 59.18.260) requires a written checklist describing the condition of the

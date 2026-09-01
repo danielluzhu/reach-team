@@ -373,6 +373,28 @@ export async function buildChecklistPdf(c: Checklist): Promise<Uint8Array> {
   }
   ctx.y = top - box.h - 38;
 
+  // Anyone else who signed on the day, in the same grid, two to a row. These
+  // are part of what was signed — unlike a signature added to the report
+  // afterwards, which the CRM prints in an addendum after these pages.
+  const others = c.extraSignatures ?? [];
+  for (let i = 0; i < others.length; i += 2) {
+    const row = others.slice(i, i + 2);
+    // A mark and the name under it belong on one page, always.
+    ensure(ctx, box.h + 46);
+    const rowTop = ctx.y;
+    for (const [column, other] of row.entries()) {
+      await signature(
+        column === 0 ? MARGIN : agentX,
+        other.signature,
+        other.name,
+        other.role,
+        signedOn,
+        rowTop
+      );
+    }
+    ctx.y = rowTop - box.h - 38;
+  }
+
   // ---- footers -------------------------------------------------------------
   // Written last, when the page count is finally known.
   ctx.pages.forEach((page, i) => {

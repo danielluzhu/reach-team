@@ -154,6 +154,19 @@
   .sigwrap .hintline { position: absolute; left: 18px; bottom: 24px; color: #b6bdc7; font-size: 0.8rem; }
   .sigwrap.signed .baseline, .sigwrap.signed .hintline { display: none; }
 
+  /* Someone else who signed on the day, once their mark has been taken. */
+  .signer { display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid var(--line); }
+  .signer:last-child { border-bottom: 0; }
+  .signer img { flex: none; width: 96px; height: 38px; object-fit: contain; object-position: left bottom;
+    border-bottom: 1px solid #cbd5e1; }
+  .signer .who { flex: 1; min-width: 0; }
+  .signer .who b { display: block; font-size: 0.92rem; }
+  .signer .who span { color: var(--muted); font-size: 0.8rem; }
+  .signer .rm { flex: none; width: 30px; height: 30px; border: 0; border-radius: 50%; background: #f1f2f4;
+    color: #6b7280; font-size: 1.1rem; line-height: 1; cursor: pointer; }
+  .signer .rm:hover { background: #fee2e2; color: #991b1b; }
+
   footer.actions {
     position: fixed; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.96);
     border-top: 1px solid var(--line); padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
@@ -376,6 +389,44 @@
       </div>
       <button type="button" class="ghost block" id="clear-agent-sig" style="margin-top:10px">Clear signature</button>
     </div>
+    <!-- Anyone else at the walkthrough. Two fixed boxes never covered a house
+         share — and somebody who isn't here doesn't hold the report up, because
+         the office can take their signature on it afterwards. -->
+    <div class="card" id="others-card">
+      <h2>Anyone else signing <span class="opt">optional</span></h2>
+      <p class="sub">A co-tenant, a witness, whoever else is standing here.
+        Someone who <strong>isn't</strong> here doesn't have to be: the report can be signed
+        from the office afterwards, so nothing is lost by finishing without them.</p>
+
+      <div id="other-signers"></div>
+
+      <div id="other-form" hidden>
+        <label for="other-name">Full name</label>
+        <input id="other-name" type="text" autocomplete="off" maxlength="120" placeholder="Their full name" />
+        <label for="other-role">Signing as</label>
+        <input id="other-role" type="text" autocomplete="off" maxlength="80" list="other-roles"
+          placeholder="Co-tenant" />
+        <datalist id="other-roles">
+          <option value="Co-tenant"></option>
+          <option value="Witness"></option>
+          <option value="Guarantor"></option>
+          <option value="Landlord"></option>
+          <option value="Agent"></option>
+        </datalist>
+        <div class="sigwrap" id="other-sigwrap" style="margin-top:10px">
+          <canvas id="other-sig"></canvas>
+          <div class="baseline"></div>
+          <div class="hintline">They sign above the line</div>
+        </div>
+        <div class="add-row" style="margin-top:10px">
+          <button type="button" class="ghost" id="save-other" style="flex:1">Add this signature</button>
+          <button type="button" class="ghost" id="cancel-other">Cancel</button>
+        </div>
+        <p class="msg err" id="err-other" hidden></p>
+      </div>
+
+      <button type="button" class="ghost block" id="add-other" style="margin-top:10px">Add a signature</button>
+    </div>
     <p class="msg err" id="err-sign" hidden></p>
   </section>
 
@@ -507,6 +558,9 @@ var state = {
   templates: null,
   generalNotes: "",
   media: [],                     // [{ kind, name, id?, mime?, size?, busy, failed, preview }]
+  // Anyone besides the tenant and the agent who signed on the day. In memory
+  // only, like every signature here: [{ name, role, signature }]
+  others: [],
   maxAttachments: 24,
   conditions: ["Excellent", "Good", "Fair", "Poor", "N/A"],
   maxCount: 12,
@@ -822,6 +876,8 @@ function applyCopy(d) {
   clearDraft();
   serverDraftId = null;
   lastPushed = "";
+  // A copy carries what was written, never a mark somebody made.
+  state.others = [];
 
   $("f-name").value = d.name || "";
   $("f-email").value = d.email || "";
@@ -1400,6 +1456,80 @@ function signaturePad(canvasId, wrapId, onChange) {
 
 var tenantPad = signaturePad("sig", "sigwrap", updateSignGate);
 var agentPad = signaturePad("agent-sig", "agent-sigwrap", updateSignGate);
+var otherPad = signaturePad("other-sig", "other-sigwrap");
+
+/* ---- anyone else signing ----
+ *
+ * The tenant and the agent are the two the form has always had, and a house
+ * share has more people in it than that. Each extra mark is taken here and
+ * kept in memory only — a signature is never restored from storage, the same
+ * rule the tenant's own signature is held to.
+ *
+ * Nobody who is absent holds this up: the report can be signed from the office
+ * later, which the card says in as many words.
+ */
+var MAX_OTHER_SIGNERS = 6;
+
+function renderOtherSigners() {
+  $("other-signers").innerHTML = state.others.map(function (o, i) {
+    return '<div class="signer">' +
+      '<img src="' + o.signature + '" alt="' + esc(o.name) + '" />' +
+      '<div class="who"><b>' + esc(o.name) + "</b><span>" + esc(o.role) + "</span></div>" +
+      '<button type="button" class="rm" data-rm-signer="' + i + '" aria-label="Remove ' +
+      esc(o.name) + '">&times;</button></div>';
+  }).join("");
+  var full = state.others.length >= MAX_OTHER_SIGNERS;
+  $("add-other").hidden = !$("other-form").hidden || full;
+  $("add-other").textContent = state.others.length ? "Add another signature" : "Add a signature";
+}
+
+function resetOtherForm() {
+  $("other-name").value = "";
+  $("other-role").value = "";
+  otherPad.clear();
+  $("err-other").hidden = true;
+  $("other-form").hidden = true;
+  renderOtherSigners();
+}
+
+$("add-other").addEventListener("click", function () {
+  $("other-form").hidden = false;
+  $("add-other").hidden = true;
+  // Only measurable once it is on screen.
+  requestAnimationFrame(function () {
+    otherPad.size();
+    $("other-name").focus();
+  });
+});
+
+$("cancel-other").addEventListener("click", resetOtherForm);
+
+$("save-other").addEventListener("click", function () {
+  var name = $("other-name").value.trim();
+  var role = $("other-role").value.trim();
+  var problem = !name
+    ? "Who is signing?"
+    : !role
+      ? "Say what they are signing as."
+      : !otherPad.isSigned()
+        ? "They need to sign in the box above."
+        : "";
+  if (problem) {
+    $("err-other").textContent = problem;
+    $("err-other").hidden = false;
+    return;
+  }
+  state.others.push({ name: name, role: role, signature: otherPad.dataUrl() });
+  resetOtherForm();
+  updateSignGate();
+});
+
+$("other-signers").addEventListener("click", guarded("signers", function (e) {
+  var rm = e.target.closest("[data-rm-signer]");
+  if (!rm) return;
+  state.others.splice(+rm.dataset.rmSigner, 1);
+  renderOtherSigners();
+}));
 
 /**
  * What still has to happen before this can be signed, or null when nothing
@@ -1413,6 +1543,14 @@ function whatsMissing() {
   }
   if (!tenantPad.isSigned()) {
     return { message: "Add the tenant's signature — sign in the box above.", focus: "sigwrap" };
+  }
+  // A signature half-taken in the open box would be dropped silently by
+  // submitting, and it is the one thing here that can't simply be typed again.
+  if (!$("other-form").hidden && (otherPad.isSigned() || $("other-name").value.trim())) {
+    return {
+      message: "Finish the other signature first — add it, or cancel it.",
+      focus: "other-name",
+    };
   }
   return null;
 }
@@ -1457,6 +1595,7 @@ function submit() {
     payload.agentName = agentName;
     if (agentPad.isSigned()) payload.agentSignature = agentPad.dataUrl();
   }
+  if (state.others.length) payload.extraSignatures = state.others;
 
   $("next").disabled = true;
   $("next").textContent = "Saving…";
