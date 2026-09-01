@@ -274,6 +274,27 @@ async function validate(body: any): Promise<{ checklist: Omit<Checklist, "id"> }
   };
 }
 
+/**
+ * The path this app is being served under, when it isn't being served at the
+ * root of its own port.
+ *
+ * :3100 is bound to localhost, so nobody in the office can open it — and
+ * starting a move-out walkthrough from a signed report is something the office
+ * does. The CRM therefore serves this page through itself, behind its sign-in,
+ * under /checklist, and says so in X-Forwarded-Prefix; the page stamps the
+ * prefix onto every path it asks for.
+ *
+ * Trusted only as far as it is checked: it is written into the page, so it is
+ * held to one leading slash and a short run of unremarkable characters, and
+ * anything else is treated as no prefix at all. A tenant opening the form
+ * directly sends no such header and gets an empty string, which is the path
+ * this app has always served.
+ */
+function basePrefix(req: Request): string {
+  const raw = (req.headers.get("X-Forwarded-Prefix") ?? "").trim().replace(/\/+$/, "");
+  return /^\/[A-Za-z0-9._~-]{1,40}$/.test(raw) ? raw : "";
+}
+
 const page = Bun.file("public/app.html");
 
 const ICONS: Record<string, { path: string; type: string }> = {
@@ -290,7 +311,10 @@ async function handle(req: Request): Promise<Response> {
     // says which version of this page it came from. "It does nothing" and "it
     // does nothing on a copy from three hours ago" are different problems.
     const build = new Date((await page.stat()).mtimeMs).toISOString().replace(/[-:]|\.\d+Z/g, "").slice(0, 13);
-    return new Response((await page.text()).replaceAll("__BUILD__", build), { headers: HTML_HEADERS });
+    return new Response(
+      (await page.text()).replaceAll("__BUILD__", build).replaceAll("__BASE__", basePrefix(req)),
+      { headers: HTML_HEADERS }
+    );
   }
 
   /**

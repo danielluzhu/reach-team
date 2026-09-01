@@ -60,6 +60,28 @@ The name field **suggests** "Dan Zhu" as a placeholder rather than filling it
 in: the field starts empty, so a name only reaches a signed checklist by being
 typed.
 
+## Served under a prefix
+
+This app binds to `127.0.0.1`, which is what lets it run without a sign-in — and
+which also means nobody in the office can open it in a browser. Anything the
+office needs from it therefore comes through the CRM, which serves everything
+under its own `/checklist` and passes it on here with that prefix removed.
+
+The CRM sends `X-Forwarded-Prefix: /checklist`, and the page is stamped with it
+(`__BASE__`, alongside `__BUILD__`): every path the page asks for — templates,
+rooms, uploads, drafts, the submission, the PDF, the thumbnails — carries the
+prefix, so the same one file works at the root of :3100 and under a path
+somewhere else. Opened directly, as a tenant on the property opens it, there is
+no header and the prefix is the empty string.
+
+The header is checked before it is used, since it goes into the page: one
+leading slash and a short run of unremarkable characters, or it is ignored.
+
+Paths are stored **without** the prefix — an upload's `url`, a draft's photo
+list, the `pdf` a submission hands back — and it is added at the point of use.
+A draft started on the property and finished from the office therefore still
+finds its photos.
+
 ## Move-in and move-out: copying a checklist
 
 A property gets walked twice — once when a tenant moves in and once when they
@@ -69,8 +91,9 @@ move-out report ends up describing a slightly different property from the
 move-in report it is supposed to be compared against.
 
 So the page can start as a copy of a checklist that has already been signed.
-Open it as `/?copy=<checklist id>` — the link the CRM puts on every signed
-report — and it comes up with:
+Open it as `/?copy=<checklist id>` — which is what the **Duplicate** link on
+every signed report in the CRM points at, as `/checklist/?copy=<id>` through the
+prefix above — and it comes up with:
 
 - the **property**: address, bedroom and bathroom counts, furnished or not;
 - the **agent** who walked it;
