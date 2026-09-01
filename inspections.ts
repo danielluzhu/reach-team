@@ -123,6 +123,8 @@ type Checklist = {
   generalNotes: string; attachments: Attachment[]; signature: string;
   certification: string; acknowledgements: string[]; signedAt: string;
   agentName?: string; agentSignature?: string;
+  /** Anyone else who signed on the day — a co-tenant, a witness. */
+  extraSignatures?: { name: string; role: string; signature: string }[];
 };
 type Row = { id: string; created_at: string; address: string; pdf_file: string | null; data: string };
 type Inspection = { id: string; createdAt: string; pdfFile: string | null; checklist: Checklist };
@@ -765,6 +767,7 @@ const DETAIL_CSS = `
       justify-content: space-between; margin-bottom: 1.25rem; }
     .head h1 { margin: 0 0 0.3rem; font-size: 1.6rem; letter-spacing: -0.02em; }
     .head .sub { color: var(--muted); font-size: 0.88rem; margin: 0; }
+    .head .unsigned-note { color: #a16207; }
     .pdf-links { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; }
     .pdf-links .plain { font-size: 0.75rem; color: var(--muted); text-align: right; max-width: 20rem; }
 
@@ -1104,6 +1107,23 @@ const SIGNATURES_JS = `
 (function () {
   var card = document.getElementById("later-signatures");
   if (!card) return;
+  /* The card is a long way down a report that runs to thousands of pixels, so
+     the way in is a link at the top — and following it opens the pad rather
+     than landing somebody next to a summary they then have to expand. */
+  function reveal() {
+    var open = document.getElementById("add-signature");
+    if (open) open.open = true;
+    card.scrollIntoView({ block: "start", behavior: "smooth" });
+    var name = document.getElementById("sig-name");
+    if (name) setTimeout(function () { try { name.focus({ preventScroll: true }); } catch (e) { name.focus(); } }, 250);
+  }
+  document.addEventListener("click", function (e) {
+    var link = e.target.closest && e.target.closest('a[href="#sign"]');
+    if (!link) return;
+    e.preventDefault();
+    reveal();
+  });
+  if (location.hash === "#sign") setTimeout(reveal, 60);
   var id = card.dataset.inspection;
   var list = document.getElementById("signature-list");
   var empty = document.getElementById("no-signatures");
@@ -1359,6 +1379,8 @@ function listRow(i: Inspection, notes: number, signed: { count: number; who: str
           <td class="found" data-label="Defects &amp; notes">${findings}</td>
           <td class="actions" data-label="Report"><div class="stack">
             <a class="pdf-link" href="/inspections/${escapeAttr(i.id)}.pdf" target="_blank" rel="noopener">PDF</a>
+            <a class="copy-link" href="/inspections/${escapeAttr(i.id)}#sign"
+              title="Add a signature to this report — the agent, a co-tenant, a witness">Sign</a>
             <a class="copy-link" href="${escapeAttr(copyUrl(i.id))}" target="_blank" rel="noopener"
               title="Start a new checklist from this one — same property, rooms, notes and photos">Duplicate</a>
           </div></td>
@@ -1495,7 +1517,14 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
     <div>
       <h1>${escapeHtml(c.address)}</h1>
       <p class="sub">${escapeHtml(c.name)} &middot; ${escapeHtml(c.email)} &middot; signed ${escapeHtml(when)}
-        ${c.agentName ? `&middot; agent ${escapeHtml(c.agentName)}` : "&middot; no agent present"}</p>
+        ${c.agentName ? `&middot; agent ${escapeHtml(c.agentName)}` : "&middot; no agent present"}
+        ${
+          laterSignatures.length
+            ? `&middot; <a href="#sign">${laterSignatures.length} signed later</a>`
+            : c.agentName && !c.agentSignature
+              ? `&middot; <span class="unsigned-note">the agent hasn&rsquo;t signed</span>`
+              : ""
+        }</p>
     </div>
     <div class="pdf-links">
       <a class="pdf-link" href="/inspections/${escapeAttr(inspection.id)}.pdf" target="_blank" rel="noopener">
@@ -1506,6 +1535,11 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
         target="_blank" rel="noopener">As signed, without the addendum</a>`
           : ""
       }
+      <a class="copy-link" href="#sign" id="jump-to-sign">${
+        c.agentName && !c.agentSignature
+          ? `Sign as ${escapeHtml(c.agentName)} &mdash; or anyone else`
+          : "Sign this report"
+      }</a>
       <a class="copy-link" href="${escapeAttr(copyUrl(inspection.id))}" target="_blank" rel="noopener"
         style="margin-top:0.25rem">Duplicate for the move-out</a>
       <span class="plain">Opens a new checklist with this property, agent, rooms,
@@ -1557,6 +1591,9 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
           : `<div class="sig"><div class="unsigned">No agent present at inspection</div>
         <p class="who">&mdash;</p><p class="role">Agent / landlord representative</p></div>`
       }
+      ${(c.extraSignatures ?? [])
+        .map((other) => signatureBlock(other.signature, other.name, other.role, when))
+        .join("")}
     </div>
   </section>
 

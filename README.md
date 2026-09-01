@@ -939,8 +939,9 @@ agent and date.
 
 Opening a report shows every room and item with its notes, a **Marked
 poor** summary at the top when there is anything to answer for, the photos and
-videos, both signatures, and the certification wording as it stood on the day it
-was signed.
+videos, every signature it was signed with — the tenant, the agent, and anyone
+else who signed at the walkthrough — and the certification wording as it stood
+on the day it was signed.
 
 The PDF and the attachments are served through this app, from the checklist
 app's own `pdfs/` and `uploads/` directories, so nobody on the team needs to be
@@ -1000,6 +1001,18 @@ sign on paper — and a co-tenant, a witness or a contractor may put their name 
 what was found days later. **Signed after the walkthrough** on each report takes
 that signature: a name, what they are signing as, an optional remark, and a
 signature drawn with a finger, a stylus or a mouse.
+
+It is reached from three places, because a report runs to thousands of pixels
+and a card at the bottom of one is a card nobody finds: **Sign** in the list
+beside the PDF, a button at the top of the report — which reads *Sign as
+&lt;the agent&gt;* when an agent was named and never signed — and the card itself.
+All three open the pad and put the cursor in the name field. The header line
+says **the agent hasn't signed** where that is true, and links to the count of
+signatures added since where there are any.
+
+Anyone who *is* at the walkthrough signs on the checklist itself, in the
+checklist app, and those signatures are part of the signed document. This is for
+everyone who wasn't.
 
 What it cannot do is change the report. The conditions and the notes are what
 was recorded on the day, in a database this app only reads; a later signature is
