@@ -915,7 +915,8 @@ door won't open.
 The list gives each report its date, property, tenant, agent, how many rooms and
 items it covers, how many items were marked **poor** or left blank, what photos
 and videos came with it, and how many comments have been added since it was
-signed.
+signed. The last column holds the PDF and a **Duplicate** link, which
+starts the move-out walkthrough as a copy of this one.
 
 **Defects & notes** is a column of its own, and it is the reason the page
 exists: every item rated Poor or Fair with the note that came with it, worst
@@ -945,6 +946,30 @@ The PDF and the attachments are served through this app, from the checklist
 app's own `pdfs/` and `uploads/` directories, so nobody on the team needs to be
 able to reach :3100. If a PDF has gone missing from disk, the checklist app is
 asked for it — it rebuilds one from the stored answers.
+
+### Duplicating one for the move-out
+
+Every report carries a **Duplicate** link — in the list beside its PDF, and on
+the report itself as *Duplicate for the move-out*. It opens the checklist app
+with this report copied in: the same property, the same agent, every room with
+the condition and note each item carried, the general notes, and the photos.
+The tenant's name comes with it and is the first field focused, because when the
+next walkthrough is a different tenancy that is the thing to change.
+
+The point is that a move-out report should be the move-in report re-checked. Two
+checklists typed from scratch six months apart describe subtly different
+properties, which is exactly the argument nobody wants to be having over a
+deposit.
+
+Nothing here writes to `checklists.db` for this either — the link goes to the
+checklist app, which is where a checklist is filled in and signed. The signed
+report it was copied from is untouched, and the copy only becomes a record when
+somebody signs it.
+
+That link is followed by a **browser**, not by this server, so it needs an
+address a person can actually open. It uses `CHECKLIST_URL`, which is also the
+address this app calls to rebuild a missing PDF — usually localhost. Where the
+two differ, set `CHECKLIST_PUBLIC_URL` to the address tenants are sent.
 
 ### Comments added after signing
 
@@ -980,7 +1005,8 @@ stored as it was at the time, so renaming an account doesn't rewrite an old
 addendum.
 
 Override the paths with `CHECKLIST_DIR` (or `CHECKLIST_DB`, `CHECKLIST_PDF_DIR`,
-`CHECKLIST_UPLOAD_DIR` individually), the rebuild address with `CHECKLIST_URL`,
+`CHECKLIST_UPLOAD_DIR` individually), the rebuild address with `CHECKLIST_URL`
+and the address the Duplicate links point at with `CHECKLIST_PUBLIC_URL`,
 and the timezone the signing times are read in with `CHECKLIST_TZ` — it defaults
 to `America/Los_Angeles`, because the properties are here.
 

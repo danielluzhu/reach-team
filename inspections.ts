@@ -29,6 +29,24 @@ const UPLOAD_DIR = process.env.CHECKLIST_UPLOAD_DIR ?? `${CHECKLIST_DIR}/uploads
  */
 const CHECKLIST_URL = process.env.CHECKLIST_URL ?? "http://127.0.0.1:3100";
 
+/**
+ * Where a person opens the checklist form, which needn't be where this server
+ * rebuilds a PDF from: the rebuild is a call from this process, usually over
+ * localhost, while the "duplicate" link below is followed by somebody's
+ * browser, which may be anywhere. Set `CHECKLIST_PUBLIC_URL` to the address
+ * tenants are sent when the two differ; otherwise they are the same thing.
+ */
+const CHECKLIST_PUBLIC_URL = (process.env.CHECKLIST_PUBLIC_URL ?? CHECKLIST_URL).replace(/\/+$/, "");
+
+/**
+ * The link that starts a new checklist as a copy of this one — same property,
+ * same agent, same rooms with what was recorded about each of them, same
+ * photos, and the tenant's name there to be changed. It goes to the checklist
+ * app because that is where a checklist is filled in and signed; nothing here
+ * writes to `checklists.db`.
+ */
+const copyUrl = (id: string) => `${CHECKLIST_PUBLIC_URL}/?copy=${id}`;
+
 /** The properties are all in Seattle, so that's where a signing time is read. */
 const TIME_ZONE = process.env.CHECKLIST_TZ ?? "America/Los_Angeles";
 
@@ -388,7 +406,14 @@ export const PAGE_CSS = `
     .pdf-link { display: inline-flex; align-items: center; gap: 0.35rem; background: #1f2937; color: #fff;
       border-radius: 6px; padding: 0.3rem 0.65rem; font: 600 0.78rem system-ui, sans-serif;
       text-decoration: none; white-space: nowrap; }
-    .pdf-link:hover { background: #374151; }`;
+    .pdf-link:hover { background: #374151; }
+
+    /* Starting another checklist from this one. Quieter than the PDF: it is
+       the occasional action, not the one every row is here for. */
+    .copy-link { display: inline-block; background: #fff; border: 1px solid #d1d5db; border-radius: 6px;
+      padding: 0.26rem 0.6rem; font: 600 0.78rem system-ui, sans-serif; color: #374151;
+      text-decoration: none; white-space: nowrap; }
+    .copy-link:hover { border-color: #9ca3af; color: var(--ink); }`;
 
 const LIST_CSS = `
     .toolbar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0 0 0.9rem; }
@@ -418,6 +443,7 @@ const LIST_CSS = `
     td.who .sub { display: block; color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
     td.flags { width: 9rem; }
     td.actions { text-align: right; white-space: nowrap; }
+    td.actions .stack { display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem; }
     .flag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.75rem;
       font-weight: 600; margin: 0 0.25rem 0.2rem 0; white-space: nowrap; }
     .flag.poor { background: #fee2e2; color: #991b1b; }
@@ -487,7 +513,7 @@ const DETAIL_CSS = `
     .head h1 { margin: 0 0 0.3rem; font-size: 1.6rem; letter-spacing: -0.02em; }
     .head .sub { color: var(--muted); font-size: 0.88rem; margin: 0; }
     .pdf-links { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; }
-    .pdf-links .plain { font-size: 0.75rem; color: var(--muted); }
+    .pdf-links .plain { font-size: 0.75rem; color: var(--muted); text-align: right; max-width: 20rem; }
 
     .facts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1.5rem; }
     .fact { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 0.5rem 0.8rem;
@@ -844,8 +870,11 @@ function listRow(i: Inspection, notes: number): string {
             <span class="sub">Agent: ${escapeHtml(c.agentName || "none")}</span></td>
           <td class="flags" data-label="Flags">${flags}</td>
           <td class="found" data-label="Defects &amp; notes">${findings}</td>
-          <td class="actions" data-label="Report">
-            <a class="pdf-link" href="/inspections/${escapeAttr(i.id)}.pdf" target="_blank" rel="noopener">PDF</a></td>
+          <td class="actions" data-label="Report"><div class="stack">
+            <a class="pdf-link" href="/inspections/${escapeAttr(i.id)}.pdf" target="_blank" rel="noopener">PDF</a>
+            <a class="copy-link" href="${escapeAttr(copyUrl(i.id))}" target="_blank" rel="noopener"
+              title="Start a new checklist from this one — same property, rooms, notes and photos">Duplicate</a>
+          </div></td>
         </tr>`;
 }
 
@@ -986,6 +1015,10 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
         target="_blank" rel="noopener">As signed, without the addendum</a>`
           : ""
       }
+      <a class="copy-link" href="${escapeAttr(copyUrl(inspection.id))}" target="_blank" rel="noopener"
+        style="margin-top:0.25rem">Duplicate for the move-out</a>
+      <span class="plain">Opens a new checklist with this property, agent, rooms,
+        notes and photos already in it &mdash; change the tenant and what has changed.</span>
     </div>
   </div>
 
