@@ -919,8 +919,9 @@ door won't open.
 The list gives each report its date, property, tenant, agent, how many rooms and
 items it covers, how many items were marked **poor** or left blank, what photos
 and videos came with it, and how many comments have been added since it was
-signed. The last column holds the PDF and a **Duplicate** link, which
-starts the move-out walkthrough as a copy of this one.
+signed. The last column holds the PDF, **Remote signing** — a
+link out to somebody who has to sign it and has no account here — and
+**Duplicate**, which starts the move-out walkthrough as a copy of this one.
 
 **Defects & notes** is a column of its own, and it is the reason the page
 exists: every item rated Poor or Fair with the note that came with it, worst
@@ -1044,8 +1045,21 @@ afterwards with **N signed later**, and the filter box matches those names.
 
 The signatures that go missing belong to the people who have no account here and
 never will: the tenant who has moved out, the landlord, the contractor who saw
-the damage. **Send a link to someone who isn't here** makes one, addressed to a
-name and a capacity — the office decides what they are signing as, they don't.
+the damage. A link is made for one of them by name and capacity — the office
+decides what they are signing as, they don't.
+
+**Remote signing** sits on every row of `/inspections`, next to the PDF, and
+opens a dialog rather than another page: chasing signatures across a dozen
+properties shouldn't cost the place in the list somebody scrolled to. It names
+the property, pre-fills the agent from the checklist (who it is for nine times
+in ten), lists what is **already out** for that inspection — because the question
+after "send them a link" is always "did I already?" — and puts the new address
+straight on the clipboard. Links can be withdrawn from there too, and there is a
+line out to signing in person on the device in your hand. The same thing lives
+on the report itself, under **Send a link to someone who isn't here**.
+
+A row with a link outstanding is flagged **N awaiting signature**, so what is
+being waited on is visible without opening anything.
 
 The link goes to `/sign/<token>`: the one route in this app that answers without
 a session. The token is 32 random bytes and it *is* the authority, the same

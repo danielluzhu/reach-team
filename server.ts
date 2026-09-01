@@ -1771,6 +1771,16 @@ const server = Bun.serve({
      */
     const signLinks = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/sign-links$/);
     if (signLinks) {
+      // What is already out for this inspection — asked by the dialog on the
+      // list, because the question after "send them a link" is always "did I
+      // already?". Rendered here so the two pages can't disagree about how a
+      // link looks.
+      if (req.method === "GET") {
+        return Response.json(
+          { links: inspectionSignLinks(signLinks[1]).map((link) => renderSignLink(link, user)) },
+          { headers: { "Cache-Control": "no-store, private" } }
+        );
+      }
       if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
       let body: any;
       try {

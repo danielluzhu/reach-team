@@ -605,6 +605,27 @@ export function inspectionSignLinks(checklistId: string): SignLink[] {
   return (listLinks.all(checklistId) as LinkRow[]).map(toLink);
 }
 
+const allLinks = db.query(
+  `SELECT checklist_id, expires_at, used_at, revoked_at FROM inspection_sign_links`
+);
+
+/**
+ * How many links are still out per inspection — one query for the whole list.
+ * Only the ones somebody could still sign count: a spent or withdrawn link is
+ * not something anybody is waiting on.
+ */
+function outstandingLinks(): Map<string, number> {
+  const waiting = new Map<string, number>();
+  const now = Date.now();
+  for (const row of allLinks.all() as {
+    checklist_id: string; expires_at: string; used_at: string | null; revoked_at: string | null;
+  }[]) {
+    if (row.used_at || row.revoked_at || new Date(row.expires_at).getTime() < now) continue;
+    waiting.set(row.checklist_id, (waiting.get(row.checklist_id) ?? 0) + 1);
+  }
+  return waiting;
+}
+
 /**
  * Where a link points. Built from the address this app is actually reached on
  * rather than from the request, because the request that creates a link often
@@ -919,7 +940,29 @@ export const PAGE_CSS = `
     .copy-link { display: inline-block; background: #fff; border: 1px solid #d1d5db; border-radius: 6px;
       padding: 0.26rem 0.6rem; font: 600 0.78rem system-ui, sans-serif; color: #374151;
       text-decoration: none; white-space: nowrap; }
-    .copy-link:hover { border-color: #9ca3af; color: var(--ink); }`;
+    .copy-link:hover { border-color: #9ca3af; color: var(--ink); }
+    button.copy-link { font-family: inherit; }
+
+    /* Links sent out so somebody who isn't here can sign it themselves. */
+    .sign-link { border-top: 1px solid #f1f2f4; padding: 0.7rem 0; }
+    .sign-link .who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin: 0; }
+    .sign-link .who { font-size: 0.9rem; font-weight: 600; }
+    .sign-link .role { font-weight: 400; color: var(--muted); font-size: 0.8rem; }
+    .sign-link .state { font-size: 0.72rem; font-weight: 600; padding: 0.05rem 0.4rem; border-radius: 999px; }
+    .sign-link .state.waiting { background: #ede9fe; color: #5b21b6; }
+    .sign-link .state.signed { background: #e3f6e5; color: #1e7d32; }
+    .sign-link .state.expired, .sign-link .state.revoked { background: #f3f4f6; color: #6b7280; }
+    .sign-link .at { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.15rem 0 0;
+      color: var(--muted); font-size: 0.78rem; }
+    .sign-link .drop { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
+      color: var(--muted); font: inherit; font-size: 0.78rem; text-decoration: underline; }
+    .sign-link .drop:hover { color: #991b1b; }
+    .sign-link .url { display: flex; gap: 0.4rem; margin-top: 0.45rem; }
+    .sign-link .url input { flex: 1 1 auto; min-width: 0; padding: 0.35rem 0.5rem; border: 1px solid #d1d5db;
+      border-radius: 6px; font: inherit; font-size: 0.78rem; color: #374151; background: #f9fafb; }
+    .sign-link .url button { flex: none; background: #fff; color: #374151; border: 1px solid #d1d5db;
+      border-radius: 6px; padding: 0.3rem 0.6rem; font: 600 0.78rem system-ui, sans-serif; cursor: pointer; }
+    .sign-link .url button:hover { border-color: #9ca3af; color: var(--ink); }`;
 
 const LIST_CSS = `
     .toolbar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0 0 0.9rem; }
@@ -950,6 +993,38 @@ const LIST_CSS = `
     td.flags { width: 9rem; }
     td.actions { text-align: right; white-space: nowrap; }
     td.actions .stack { display: flex; flex-direction: column; align-items: flex-end; gap: 0.35rem; }
+
+    /* Remote signing, opened from a row. A dialog rather than another page:
+       sending a link is a thirty-second job, and it shouldn't cost the place
+       in the list somebody scrolled to. */
+    #remote-sign { width: min(34rem, calc(100vw - 2rem)); max-height: min(86vh, 48rem); overflow-y: auto;
+      border: 1px solid var(--line); border-radius: 12px;
+      padding: 1.1rem 1.2rem 1.2rem; color: var(--ink); background: #fff; box-shadow: 0 12px 40px rgba(0,0,0,0.18); }
+    #remote-sign::backdrop { background: rgba(17, 24, 39, 0.45); }
+    #remote-sign h2 { margin: 0 0 0.15rem; font-size: 1.05rem; letter-spacing: -0.01em; }
+    #remote-sign .what { margin: 0 0 0.5rem; font-size: 0.85rem; font-weight: 600; }
+    #remote-sign .why { margin: 0 0 0.8rem; color: var(--muted); font-size: 0.8rem; line-height: 1.5; }
+    #remote-sign .close-row { float: right; margin: -0.4rem -0.4rem 0 0; }
+    #remote-sign .x { background: none; border: 0; font-size: 1.3rem; line-height: 1; color: var(--muted);
+      cursor: pointer; padding: 0.2rem 0.35rem; }
+    #remote-sign .x:hover { color: var(--ink); }
+    #remote-sign .links:not(:empty) { border-top: 1px solid var(--line); margin-bottom: 0.6rem; }
+    #remote-sign .fields { display: flex; flex-wrap: wrap; gap: 0.7rem; }
+    #remote-sign .field { flex: 1 1 12rem; }
+    #remote-sign label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.25rem; }
+    #remote-sign input { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px;
+      font: inherit; font-size: 0.9rem; background: #fff; }
+    #remote-sign input:focus { outline: 2px solid #93c5fd; outline-offset: -1px; border-color: transparent; }
+    #remote-sign .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.7rem; }
+    #remote-sign .row button { background: #1f2937; color: #fff; border: 0; border-radius: 6px;
+      padding: 0.42rem 0.85rem; font: 600 0.82rem system-ui, sans-serif; cursor: pointer; }
+    #remote-sign .row button:hover { background: #374151; }
+    #remote-sign .row button[disabled] { opacity: 0.6; cursor: default; }
+    #remote-sign .hint { color: var(--muted); font-size: 0.78rem; }
+    #remote-sign .err { color: #991b1b; font-size: 0.8rem; }
+    #remote-sign .also { margin: 0.9rem 0 0; padding-top: 0.7rem; border-top: 1px solid var(--line);
+      color: var(--muted); font-size: 0.8rem; }
     .flag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.75rem;
       font-weight: 600; margin: 0 0.25rem 0.2rem 0; white-space: nowrap; }
     .flag.poor { background: #fee2e2; color: #991b1b; }
@@ -958,6 +1033,7 @@ const LIST_CSS = `
     .flag.clean { background: #e3f6e5; color: #1e7d32; }
     .flag.note { background: #fef3c7; color: #92400e; }
     .flag.sign { background: #ede9fe; color: #5b21b6; }
+    .flag.awaiting { background: #fff4e0; color: #a15c00; }
     .empty td { color: var(--muted); text-align: center; padding: 2rem 0.8rem; }
 
     /* What was found wrong and what was written down, in the row itself: the
@@ -1148,27 +1224,6 @@ const DETAIL_CSS = `
     .add-sig button.ghost { background: #fff; color: #374151; border: 1px solid #d1d5db; }
     .add-sig button.ghost:hover { background: #f9fafb; color: var(--ink); }
     .add-sig .opt { font-weight: 400; text-transform: none; letter-spacing: 0; }
-
-    /* Links sent out so somebody who isn't here can sign it themselves. */
-    .sign-link { border-top: 1px solid #f1f2f4; padding: 0.7rem 0; }
-    .sign-link .who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.45rem; margin: 0; }
-    .sign-link .who { font-size: 0.9rem; font-weight: 600; }
-    .sign-link .role { font-weight: 400; color: var(--muted); font-size: 0.8rem; }
-    .sign-link .state { font-size: 0.72rem; font-weight: 600; padding: 0.05rem 0.4rem; border-radius: 999px; }
-    .sign-link .state.waiting { background: #ede9fe; color: #5b21b6; }
-    .sign-link .state.signed { background: #e3f6e5; color: #1e7d32; }
-    .sign-link .state.expired, .sign-link .state.revoked { background: #f3f4f6; color: #6b7280; }
-    .sign-link .at { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.15rem 0 0;
-      color: var(--muted); font-size: 0.78rem; }
-    .sign-link .drop { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
-      color: var(--muted); font: inherit; font-size: 0.78rem; text-decoration: underline; }
-    .sign-link .drop:hover { color: #991b1b; }
-    .sign-link .url { display: flex; gap: 0.4rem; margin-top: 0.45rem; }
-    .sign-link .url input { flex: 1 1 auto; min-width: 0; padding: 0.35rem 0.5rem; border: 1px solid #d1d5db;
-      border-radius: 6px; font: inherit; font-size: 0.78rem; color: #374151; background: #f9fafb; }
-    .sign-link .url button { flex: none; background: #fff; color: #374151; border: 1px solid #d1d5db;
-      border-radius: 6px; padding: 0.3rem 0.6rem; font: 600 0.78rem system-ui, sans-serif; cursor: pointer; }
-    .sign-link .url button:hover { border-color: #9ca3af; color: var(--ink); }
     .add-sig .hint { color: var(--muted); font-size: 0.78rem; }
     .add-sig .err { color: #991b1b; font-size: 0.8rem; }
 
@@ -1655,6 +1710,126 @@ const SIGNATURES_JS = `
   });
 })();`;
 
+/**
+ * Remote signing from the list.
+ *
+ * The report page can do this too, but the list is where somebody sits when
+ * they are chasing signatures across a dozen properties — and opening each
+ * report to send one link, then finding their way back, is the friction that
+ * ends with the links not being sent. So the row opens a dialog: who it is for,
+ * what they sign as, and the address on the clipboard.
+ *
+ * It shows what is already out for that inspection first, because the second
+ * question after "send them a link" is always "did I already?".
+ */
+const REMOTE_SIGN_JS = `
+(function () {
+  var dialog = document.getElementById("remote-sign");
+  if (!dialog || !dialog.showModal) return;
+  var what = document.getElementById("rs-what");
+  var links = document.getElementById("rs-links");
+  var name = document.getElementById("rs-name");
+  var role = document.getElementById("rs-role");
+  var make = document.getElementById("rs-make");
+  var error = document.getElementById("rs-error");
+  var inPerson = document.getElementById("rs-in-person");
+  var current = null;
+
+  function problem(message) {
+    error.textContent = message || "";
+    error.hidden = !message;
+  }
+
+  function load() {
+    links.innerHTML = '<p class="hint" style="padding:0.6rem 0">Looking&hellip;</p>';
+    fetch("/api/inspections/" + current + "/sign-links")
+      .then(function (res) { return res.ok ? res.json() : { links: [] }; })
+      .then(function (data) { links.innerHTML = (data.links || []).join(""); })
+      .catch(function () { links.innerHTML = ""; });
+  }
+
+  document.addEventListener("click", function (e) {
+    var open = e.target.closest && e.target.closest('[data-act="remote-sign"]');
+    if (!open) return;
+    current = open.dataset.id;
+    what.textContent = open.dataset.address + " \\u2014 " + open.dataset.tenant;
+    // The agent named on the checklist is who this is for nine times in ten.
+    name.value = open.dataset.agent || "";
+    role.value = open.dataset.agent ? "Agent / landlord representative" : "";
+    problem("");
+    inPerson.setAttribute("href", "/inspections/" + current + "#sign");
+    load();
+    dialog.showModal();
+    setTimeout(function () { name.focus(); name.select(); }, 30);
+  });
+
+  make.addEventListener("click", function () {
+    if (!name.value.trim()) { problem("Who is the link for?"); name.focus(); return; }
+    if (!role.value.trim()) { problem("What will they be signing as?"); role.focus(); return; }
+    make.disabled = true;
+    problem("");
+    fetch("/api/inspections/" + current + "/sign-links", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.value.trim(), role: role.value.trim() })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That link wasn't created.");
+          return data;
+        });
+      })
+      .then(function (data) {
+        links.insertAdjacentHTML("beforeend", data.link);
+        name.value = "";
+        role.value = "";
+        var field = links.querySelector(".sign-link:last-child .url input");
+        if (field) {
+          field.focus();
+          field.select();
+          if (navigator.clipboard) navigator.clipboard.writeText(field.value).catch(function () {});
+        }
+        // The row's flag is now out of date, and saying so is better than
+        // showing a number that is wrong until somebody reloads.
+        var row = document.querySelector('[data-act="remote-sign"][data-id="' + current + '"]');
+        var cell = row && row.closest("tr") && row.closest("tr").querySelector("td.flags");
+        if (cell && !cell.querySelector(".flag.awaiting.fresh")) {
+          cell.insertAdjacentHTML("beforeend", '<span class="flag awaiting fresh">link sent</span>');
+        }
+      })
+      .catch(function (err) { problem(err.message); })
+      .then(function () { make.disabled = false; });
+  });
+
+  links.addEventListener("click", function (e) {
+    var copy = e.target.closest('button[data-act="copy-link"]');
+    if (copy) {
+      var field = copy.parentElement.querySelector("input");
+      field.focus();
+      field.select();
+      var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(field.value).then(done, function () {});
+      else { try { document.execCommand("copy"); done(); } catch (err) { /* selected either way */ } }
+      return;
+    }
+    var withdraw = e.target.closest('button[data-act="revoke-link"]');
+    if (!withdraw) return;
+    var row = withdraw.closest(".sign-link");
+    if (!window.confirm("Withdraw this link? Whoever has it will no longer be able to sign.")) return;
+    withdraw.disabled = true;
+    problem("");
+    fetch("/api/inspections/" + current + "/sign-links/" + row.dataset.link, { method: "DELETE" })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That link wasn't withdrawn.");
+          return data;
+        });
+      })
+      .then(function (data) { row.outerHTML = data.link; })
+      .catch(function (err) { withdraw.disabled = false; problem(err.message); });
+  });
+})();`;
+
 function page(title: string, nav: string, navCss: string, css: string, body: string): string {
   return `<!doctype html>
 <html>
@@ -1687,7 +1862,12 @@ const UNREADABLE = `<p class="notice"><strong>The checklist database can't be re
  * findings column can have the width: a reader is here to see what the
  * walkthrough turned up, not to admire six columns of counts.
  */
-function listRow(i: Inspection, notes: number, signed: { count: number; who: string } | undefined): string {
+function listRow(
+  i: Inspection,
+  notes: number,
+  signed: { count: number; who: string } | undefined,
+  awaiting: number
+): string {
   const c = i.checklist;
   const t = tally(c);
   const found = defects(c);
@@ -1706,7 +1886,10 @@ function listRow(i: Inspection, notes: number, signed: { count: number; who: str
     // from the one that was submitted, so the list says so too.
     (signed
       ? `<span class="flag sign">${signed.count} signed later</span>`
-      : "");
+      : "") +
+    // Something is out with somebody and hasn't come back. That is a state
+    // worth seeing from the list, since it is the thing being waited on.
+    (awaiting ? `<span class="flag awaiting">${awaiting} awaiting signature</span>` : "");
 
   // Defects first, with their notes, then everything else that was written.
   const entries = [
@@ -1768,8 +1951,10 @@ function listRow(i: Inspection, notes: number, signed: { count: number; who: str
           <td class="found" data-label="Defects &amp; notes">${findings}</td>
           <td class="actions" data-label="Report"><div class="stack">
             <a class="pdf-link" href="/inspections/${escapeAttr(i.id)}.pdf" target="_blank" rel="noopener">PDF</a>
-            <a class="copy-link" href="/inspections/${escapeAttr(i.id)}#sign"
-              title="Add a signature to this report — the agent, a co-tenant, a witness">Sign</a>
+            <button type="button" class="copy-link" data-act="remote-sign"
+              data-id="${escapeAttr(i.id)}" data-address="${escapeAttr(c.address)}"
+              data-tenant="${escapeAttr(c.name)}" data-agent="${escapeAttr(c.agentName ?? "")}"
+              title="Send someone a link so they can sign this report themselves">Remote signing</button>
             <a class="copy-link" href="${escapeAttr(copyUrl(i.id))}" target="_blank" rel="noopener"
               title="Start a new checklist from this one — same property, rooms, notes and photos">Duplicate</a>
           </div></td>
@@ -1785,6 +1970,7 @@ export function renderInspectionsList(nav: string, navCss: string): string {
   const withPoor = inspections.filter((i) => tally(i.checklist).poor > 0).length;
   const counts = noteCounts();
   const signed = signatureSummary();
+  const awaiting = outstandingLinks();
   const body = `  <h1>Inspections</h1>
   <p class="lede">Every signed move-in condition report, newest first &mdash;
     ${inspections.length} in all${withPoor ? `, ${withPoor} with something marked poor` : ""}.
@@ -1813,7 +1999,7 @@ export function renderInspectionsList(nav: string, navCss: string): string {
         ${
           inspections.length
             ? inspections
-                .map((i) => listRow(i, counts.get(i.id) ?? 0, signed.get(i.id)))
+                .map((i) => listRow(i, counts.get(i.id) ?? 0, signed.get(i.id), awaiting.get(i.id) ?? 0))
                 .join("") +
               `\n        <tr class="empty no-match" hidden><td colspan="6">No inspection matches that.</td></tr>`
             : `<tr class="empty"><td colspan="6">No inspections have been signed yet.</td></tr>`
@@ -1821,7 +2007,41 @@ export function renderInspectionsList(nav: string, navCss: string): string {
       </tbody>
     </table>
   </div>
-  <script>${LIST_JS}</script>`;
+  <dialog id="remote-sign">
+    <form method="dialog" class="close-row"><button class="x" aria-label="Close">&times;</button></form>
+    <h2>Remote signing</h2>
+    <p class="what" id="rs-what"></p>
+    <p class="why">They don&rsquo;t need an account. The link opens this report and one box to sign it,
+      works once, and expires in a fortnight &mdash; and it can be withdrawn until it is used.
+      Whoever holds it can read this inspection, so send it to the person it names and nobody else.</p>
+
+    <div id="rs-links" class="links"></div>
+
+    <div class="fields">
+      <div class="field">
+        <label for="rs-name">Who is it for</label>
+        <input id="rs-name" type="text" maxlength="120" autocomplete="off" placeholder="Their full name" />
+      </div>
+      <div class="field">
+        <label for="rs-role">They will sign as</label>
+        <input id="rs-role" type="text" maxlength="80" autocomplete="off" list="rs-roles"
+          placeholder="${escapeAttr(SIGNER_ROLES[0])}" />
+        <datalist id="rs-roles">${SIGNER_ROLES.map(
+          (role) => `<option value="${escapeAttr(role)}"></option>`
+        ).join("")}</datalist>
+      </div>
+    </div>
+    <div class="row">
+      <button type="button" id="rs-make">Create the link</button>
+      <span class="hint">Nothing is sent for you &mdash; copy it into your own email or text.</span>
+      <span class="err" id="rs-error" hidden></span>
+    </div>
+    <p class="also">Signing in person instead? <a href="#" id="rs-in-person">Open the report</a> and
+      sign on this device.</p>
+  </dialog>
+
+  <script>${LIST_JS}</script>
+  <script>${REMOTE_SIGN_JS}</script>`;
   return page("Inspections", nav, navCss, LIST_CSS, body);
 }
 
