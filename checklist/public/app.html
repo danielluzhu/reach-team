@@ -35,6 +35,11 @@
     color: #14532d; font-size: 0.85rem; line-height: 1.4; }
   .restored button { flex: none; border: 0; background: none; padding: 4px 6px; font: inherit;
     font-size: 0.8rem; font-weight: 600; color: #14532d; text-decoration: underline; cursor: pointer; }
+  /* And when it started as a copy of an earlier checklist. A different colour
+     because it is a different claim: what's on screen is last time's
+     walkthrough until this one has been walked. */
+  .restored.copied { background: #fdf4e3; border-color: #ecd9ae; color: #7c4a03; }
+  .restored.copied button { color: #7c4a03; }
   .wrap { max-width: 640px; margin: 0 auto; padding: 0 16px; }
 
   header { background: var(--ink); color: #fff; padding: 18px 0 16px; }
@@ -677,17 +682,24 @@ document.addEventListener("input", function (e) {
 document.addEventListener("change", function () { saveDraft(); pushDraft(); });
 document.addEventListener("click", function () { saveDraft(); pushDraft(); });
 
-function restoreDraft() {
+/** What this browser kept, if it is still worth putting back. */
+function savedDraft() {
   var raw;
-  try { raw = localStorage.getItem(DRAFT_KEY); } catch (e) { return false; }
-  if (!raw) return false;
+  try { raw = localStorage.getItem(DRAFT_KEY); } catch (e) { return null; }
+  if (!raw) return null;
 
   var d;
-  try { d = JSON.parse(raw); } catch (e) { clearDraft(); return false; }
+  try { d = JSON.parse(raw); } catch (e) { clearDraft(); return null; }
   if (!d || d.v !== 1 || !d.savedAt || Date.now() - d.savedAt > DRAFT_MAX_AGE_MS) {
     clearDraft();
-    return false;
+    return null;
   }
+  return d;
+}
+
+function restoreDraft() {
+  var d = savedDraft();
+  if (!d) return false;
 
   $("f-name").value = d.name || "";
   $("f-email").value = d.email || "";
@@ -727,6 +739,125 @@ $("discard-draft").addEventListener("click", function () {
   clearDraft();
   location.reload();
 });
+
+/* ---------------- starting from an earlier checklist ----------------
+ *
+ * A property is walked twice: once when a tenant moves in, and once when they
+ * move out. The second walkthrough is really the first one re-checked, so it
+ * starts as a copy of it — reached by opening this page with
+ * ?copy=<checklist id>, which is the link the CRM puts on a signed report.
+ *
+ * What comes over is what was written: the address, the agent, the rooms and
+ * the condition and note each item carried, the general notes, and the photos.
+ * What does not is anything that made the first one a record — the signatures
+ * are made again, by whoever is standing in the property today.
+ *
+ * The tenant's name comes with it, because it is usually the same tenancy, and
+ * the field is focused and selected: when it is a new tenant, changing it is
+ * the first thing this page asks for.
+ */
+
+function copyParam() {
+  var match = /[?&]copy=([0-9a-f-]{36})(?:&|$)/.exec(location.search);
+  return match ? match[1] : null;
+}
+
+/* Once the copy has been made, the link has done its job. A reload must not
+   make it again — that would throw away everything typed since, and
+   pull-to-refresh is one careless swipe. */
+function forgetCopyLink() {
+  try {
+    if (window.history && history.replaceState) history.replaceState(null, "", location.pathname);
+  } catch (e) { /* the copy still works; it just shouldn't be repeated */ }
+}
+
+function startCopy(id) {
+  // Whatever is in progress on this phone is somebody's walkthrough. The copy
+  // was asked for deliberately, so it wins — but not silently. Asked before
+  // anything is fetched or cleared, so answering no costs nothing.
+  var open = savedDraft();
+  if (open && Array.isArray(open.rooms) && open.rooms.length &&
+      !confirm("Start a copy of an earlier checklist? The checklist in progress on this phone will be cleared.")) {
+    forgetCopyLink();
+    if (!restoreDraft()) go(0);
+    return;
+  }
+
+  fetch("/api/checklists/" + id + "/copy")
+    .then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (data) {
+        if (!res.ok) throw new Error(data.error || "That checklist couldn't be opened.");
+        return data;
+      });
+    })
+    .then(applyCopy)
+    .catch(function (err) {
+      // Nothing has been cleared at this point, so the fallback is whatever
+      // was already here — and a blank form if there was nothing.
+      forgetCopyLink();
+      toast(err.message + " Start this checklist from scratch instead.", true);
+      if (!restoreDraft()) go(0);
+    });
+}
+
+function applyCopy(d) {
+  // A copy is a new checklist, not a continuation of one: it takes its own
+  // draft id, so what is filled in from here never lands on the row an
+  // unfinished checklist was being saved to.
+  clearDraft();
+  serverDraftId = null;
+  lastPushed = "";
+
+  $("f-name").value = d.name || "";
+  $("f-email").value = d.email || "";
+  $("f-address").value = d.address || "";
+  $("f-agent").value = d.agentName || "";
+  $("furnished").checked = !!d.furnished;
+  state.bedrooms = typeof d.bedrooms === "number" ? d.bedrooms : state.bedrooms;
+  state.bathrooms = typeof d.bathrooms === "number" ? d.bathrooms : state.bathrooms;
+  state.rooms = (Array.isArray(d.rooms) ? d.rooms : []).map(function (room) {
+    return {
+      kind: room.kind,
+      name: room.name,
+      notes: room.notes || "",
+      items: (room.items || []).map(function (item) {
+        return { label: item.label, condition: item.condition || "", notes: item.notes || "" };
+      })
+    };
+  });
+  // These rooms came from the checklist, not from the templates. Saying so is
+  // what stops a step back to the details and forward again from rebuilding
+  // the list from the counts — which would take every rating with it.
+  state.builtFor = state.bedrooms + "/" + state.bathrooms + "/" + ($("furnished").checked ? "f" : "u");
+  state.generalNotes = d.generalNotes || "";
+  $("general-notes").value = state.generalNotes;
+  // The same files, referred to again rather than uploaded a second time.
+  state.media = (Array.isArray(d.media) ? d.media : []).map(function (m) {
+    return { id: m.id, kind: m.kind, mime: m.mime, name: m.name, size: m.size, url: m.url, preview: m.url };
+  });
+
+  var from = d.from || {};
+  var signed = from.signedAt ? new Date(from.signedAt) : null;
+  $("restored").classList.add("copied");
+  $("restored-text").textContent =
+    "Copied from the checklist " + (from.name ? from.name + " signed" : "signed") +
+    (signed ? " on " + signed.toLocaleDateString() : " earlier") + ". Every room, rating, note and " +
+    "photo came with it. Change the tenant's name if this is a new tenant, then work through the " +
+    "property and change what has changed.";
+  $("restored").hidden = false;
+
+  renderCounts();
+  describeFurnishings();
+  renderMedia();
+  go(0);
+  // The one thing a copy is most likely to be wrong about.
+  try { $("f-name").focus({ preventScroll: true }); $("f-name").select(); } catch (e) { /* not fatal */ }
+  // Worth keeping from the outset: this is already a checklist's worth of
+  // typing before today's walkthrough has added anything to it.
+  saveDraft(true);
+  pushDraft(true);
+  forgetCopyLink();
+}
 
 /* ---------------- step 1 ---------------- */
 
@@ -1459,8 +1590,12 @@ fetch("/api/templates")
   .catch(function () { renderCounts(); });
 
 renderCounts();
-// A checklist left behind by a reload comes back; otherwise this is step one.
-if (!restoreDraft()) go(0);
+// A ?copy= link starts this checklist as a copy of an earlier one. Failing
+// that, a checklist left behind by a reload comes back — and failing that,
+// this is step one.
+var copyFrom = copyParam();
+if (copyFrom) startCopy(copyFrom);
+else if (!restoreDraft()) go(0);
 </script>
 </body>
 </html>

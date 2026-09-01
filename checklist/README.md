@@ -10,9 +10,11 @@ bun run start          # or: bun run dev   (reloads on change)
 | Route                    | What it is                                          |
 | ------------------------ | --------------------------------------------------- |
 | `/`                      | The whole app — one page, three steps                |
+| `/?copy=<checklist id>`  | The same page, started as a copy of an earlier report |
 | `/api/templates`         | Room templates, condition names, the count cap       |
 | `/api/rooms?bedrooms=&bathrooms=` | The starting rooms for those counts         |
 | `/api/checklists`        | `POST` a signed checklist → `{ id, pdf }`            |
+| `/api/checklists/:id/copy` | What a signed checklist says, as the start of another |
 | `/checklists/:id.pdf`    | The PDF, rendered on request from the stored answers |
 | `/api/health`            | `{ ok: true }`                                       |
 
@@ -57,6 +59,49 @@ authentication** — see "Before this goes anywhere public".
 The name field **suggests** "Dan Zhu" as a placeholder rather than filling it
 in: the field starts empty, so a name only reaches a signed checklist by being
 typed.
+
+## Move-in and move-out: copying a checklist
+
+A property gets walked twice — once when a tenant moves in and once when they
+move out — and the second walkthrough is really the first one re-checked. Typing
+the address, the rooms and everything recorded about them again is how a
+move-out report ends up describing a slightly different property from the
+move-in report it is supposed to be compared against.
+
+So the page can start as a copy of a checklist that has already been signed.
+Open it as `/?copy=<checklist id>` — the link the CRM puts on every signed
+report — and it comes up with:
+
+- the **property**: address, bedroom and bathroom counts, furnished or not;
+- the **agent** who walked it;
+- every **room**, with the condition and the note each item carried, and the
+  room's own note;
+- the **general notes**;
+- the **photos and videos**, referred to again rather than uploaded a second
+  time. Both checklists point at the same file, which is why the boot-time
+  sweep only deletes an upload nothing refers to.
+
+What does not come over is anything that made the first one a record: no
+signature, no certification, no signing time. Those are made afresh, by whoever
+is standing in the property today.
+
+The **tenant's name and email come with it**, because it is usually the same
+tenancy — and the name field is focused and selected the moment the page opens,
+because when it isn't the same tenant that is the first thing to change.
+
+The copy is a new checklist, not an edit of the old one. It takes its own draft
+id, so nothing typed into it lands on a draft somebody else is still filling in,
+and the signed report it came from is never touched — this app has no route that
+changes one. A checklist already in progress on the phone is not thrown away
+without being asked about first.
+
+Once the copy is made the `?copy=` is taken out of the address bar. A reload has
+to bring back what has been typed since, not make the copy again — and
+pull-to-refresh is one careless swipe.
+
+The banner at the top says which checklist it came from and who signed it, in a
+different colour from the "picked up where you left off" one: until the property
+has actually been walked, what is on screen is last time's walkthrough.
 
 ## Not losing the work
 

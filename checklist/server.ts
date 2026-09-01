@@ -462,6 +462,75 @@ async function handle(req: Request): Promise<Response> {
     return new Response("Method not allowed", { status: 405 });
   }
 
+  /**
+   * A signed checklist, handed back as the starting point for another one.
+   *
+   * The same property gets walked twice — once when a tenant moves in and once
+   * when they move out — and the second walkthrough is really the first one
+   * re-checked. Typing the address, the rooms and everything recorded about
+   * them a second time is how a move-out report ends up describing a slightly
+   * different property from the move-in report it is meant to be compared
+   * against. So this hands back what was written: the address, the agent, the
+   * rooms with the condition and the note each item carried, the general
+   * notes, and the photos.
+   *
+   * What it does not hand back is what makes a checklist a record — no
+   * signature, no certification, no signing time. Those are made afresh, by
+   * whoever walks the property this time.
+   *
+   * Behind an unguessable id, the same bargain as /checklists/:id.pdf: holding
+   * the link is what gets you the checklist.
+   */
+  const copy = url.pathname.match(/^\/api\/checklists\/([0-9a-f-]{36})\/copy$/);
+  if (copy && req.method === "GET") {
+    const row = readChecklist.get(copy[1]) as { data: string } | undefined;
+    if (!row) return Response.json({ error: "No such checklist." }, { status: 404 });
+    const c = JSON.parse(row.data) as Checklist;
+
+    // Photos and videos are referred to, not duplicated: both checklists point
+    // at the same upload, which is why the boot-time sweep only removes a file
+    // that nothing refers to. One that has gone from disk is dropped here
+    // rather than arriving as a thumbnail that can't be drawn.
+    const media: (Attachment & { url: string })[] = [];
+    for (const a of c.attachments ?? []) {
+      const type = typeOf(a.mime);
+      const path = uploadPath(a.id, a.mime);
+      if (!type || !path || !(await Bun.file(path).exists())) continue;
+      media.push({ ...a, url: `/uploads/${a.id}.${type.ext}` });
+    }
+
+    return Response.json(
+      {
+        // What the page says it copied from, so nobody has to take its word
+        // that the right checklist came back.
+        from: { id: c.id, name: c.name, address: c.address, signedAt: c.signedAt },
+        // Carried because it is usually the same tenancy — and editable,
+        // which is the point when it isn't.
+        name: c.name,
+        email: c.email,
+        address: c.address,
+        bedrooms: c.bedrooms,
+        bathrooms: c.bathrooms,
+        // Never stored as a flag: the section either got built or it didn't.
+        furnished: (c.rooms ?? []).some((r) => r.kind === "furnishings"),
+        agentName: c.agentName ?? "",
+        rooms: (c.rooms ?? []).map((r) => ({
+          kind: r.kind,
+          name: r.name,
+          notes: r.notes ?? "",
+          items: (r.items ?? []).map((i) => ({
+            label: i.label,
+            condition: i.condition ?? "",
+            notes: i.notes ?? "",
+          })),
+        })),
+        generalNotes: c.generalNotes ?? "",
+        media,
+      },
+      { headers: { "Cache-Control": "no-store, private" } }
+    );
+  }
+
   if (url.pathname === "/api/checklists" && req.method === "POST") {
     const length = Number(req.headers.get("content-length") ?? 0);
     if (length > MAX_BODY) return Response.json({ error: "That submission is too large." }, { status: 413 });
