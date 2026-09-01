@@ -993,6 +993,33 @@ is answered `401`, not a redirect to the sign-in page. A redirect answers a
 telling somebody mid-walkthrough that their answers had been saved when they
 hadn't. `authenticate()` treats any path with an `/api/` segment this way.
 
+### Signing a report after the fact
+
+The agent is often not at the walkthrough — the signed PDF prints them a line to
+sign on paper — and a co-tenant, a witness or a contractor may put their name to
+what was found days later. **Signed after the walkthrough** on each report takes
+that signature: a name, what they are signing as, an optional remark, and a
+signature drawn with a finger, a stylus or a mouse.
+
+What it cannot do is change the report. The conditions and the notes are what
+was recorded on the day, in a database this app only reads; a later signature is
+added beside them and never into them. That is the same bargain the comments
+strike, and for the same reason — see below.
+
+Anyone signed in can capture one, and it is attributed twice: to the person
+whose name is on it, and to the account that captured it. Those are often not
+the same person, since a tenant signs on somebody else's laptop, and the page
+and the addendum both say so rather than implying a signature appeared by
+itself. Removing one is limited to whoever captured it, or the owner, and is a
+soft delete like a comment's.
+
+On the PDF they print in the addendum, in a **Signatures** section before the
+comments, each with the mark itself, the role, the time it was made, the account
+that captured it and the remark. The addendum's own heading and preamble say
+what is on it: that everything there was added later, and that nothing on it
+changes what was certified above. The list marks a report somebody signed
+afterwards with **N signed later**, and the filter box matches those names.
+
 ### Comments added after signing
 
 Somebody always learns something after the walkthrough — a repair gets booked, a
@@ -1009,13 +1036,13 @@ dispute. So:
   writes to `checklists.db`, which is opened read-only.
 - The file on disk is never rewritten. `?original=1` serves it byte for byte as
   it was signed — that's the version to hand over if anyone ever has to prove
-  what was actually certified.
+  what was actually certified. A download carrying an addendum is named
+  `..._with-addendum.pdf`, so it can't be mistaken for the signed copy.
 - On `/inspections/:id.pdf` the comments are appended as an **addendum**, on
   pages after the signature, built onto a copy as the PDF is served
   (`addendum.ts`). Those pages say in as many words that they were added after
-  signing and that nobody signed them, and each comment carries its author and
-  timestamp. The download is named `..._with-comments.pdf` so it can't be
-  mistaken for the signed copy once it's in somebody's downloads folder.
+  signing and that nobody signed the comments, and each one carries its author
+  and timestamp. Later signatures print on the same pages, above them.
 - The signed pages keep the footers they were signed with. "Page 2 of 5" on a
   document that is now seven pages long is the truth about what was signed; the
   addendum numbers itself separately, in red, and says what it is.

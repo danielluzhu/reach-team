@@ -126,6 +126,44 @@ db.run(`
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_inspection_notes ON inspection_notes(checklist_id, id)`);
 
+/**
+ * Signatures put to an inspection after it was signed.
+ *
+ * The agent is often not at the walkthrough, a co-tenant signs the next day, a
+ * contractor confirms what they were shown a week later. None of that can go
+ * into the checklist itself: `checklists.db` is read-only here, and the PDF in
+ * `checklist/pdfs/` is the document the tenant certified — rewriting it to add
+ * a name is exactly what a record like this must never do.
+ *
+ * So a later signature is kept here and prints in the addendum, after the
+ * signed pages, saying what it is. It carries a remark of its own, because
+ * somebody signing a report a week on usually has something to say about it,
+ * and nothing they write changes a word of what was recorded on the day.
+ *
+ * `added_by` is the account that captured it — often not the signer, who may
+ * be a tenant signing on somebody's laptop — and both names are stored as they
+ * stood, so a renamed account doesn't rewrite an old addendum. Deleting is
+ * soft, for the same reason it is for a comment.
+ */
+db.run(`
+  CREATE TABLE IF NOT EXISTS inspection_signatures (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    checklist_id  TEXT NOT NULL,
+    signer_name   TEXT NOT NULL,
+    role          TEXT NOT NULL,
+    remark        TEXT NOT NULL DEFAULT '',
+    -- The PNG the canvas produced, as a data URL, exactly as the checklist app
+    -- stores the signatures made on the day.
+    signature     TEXT NOT NULL,
+    signed_at     TEXT NOT NULL,
+    added_by      TEXT NOT NULL,
+    added_by_name TEXT,
+    deleted_at    TEXT,
+    deleted_by    TEXT
+  )`);
+
+db.run(`CREATE INDEX IF NOT EXISTS idx_inspection_signatures ON inspection_signatures(checklist_id, id)`);
+
 /** How many past states of each sheet to keep. Roughly a day of active use. */
 export const SHEET_VERSIONS_KEPT = 60;
 

@@ -311,6 +311,194 @@ export function deleteInspectionNote(
   return { ok: true };
 }
 
+/* ---------------------------------------------------------- later signatures */
+
+/**
+ * Signatures put to an inspection after it was signed.
+ *
+ * The agent is often not at the walkthrough — the PDF prints them a line to
+ * sign on paper — and a co-tenant, a witness or a contractor may put their name
+ * to what was found days later. Until now the only way to record that was a
+ * comment saying somebody had signed, which is not the same thing as a
+ * signature.
+ *
+ * What they cannot do is change the report. The conditions and the notes are
+ * what was recorded on the day, in a database this app only reads; a later
+ * signature is added beside them, with a remark of its own, and prints in the
+ * addendum after the signed pages. Nothing about the signed document moves.
+ */
+export type LaterSignature = {
+  id: number;
+  name: string;
+  role: string;
+  remark: string;
+  /** The PNG the canvas produced, as a data URL. */
+  signature: string;
+  signedAt: string;
+  addedBy: string;
+  addedByName: string | null;
+};
+
+/** Room for what somebody signing a week later wants to put on the record. */
+export const REMARK_MAX = 2000;
+const SIGNER_MAX = 120;
+const ROLE_MAX = 80;
+/** A canvas signature is a few KB. This is slack, not a target. */
+const SIGNATURE_MAX = 400_000;
+
+/**
+ * Offered in the page, not enforced here: the roles people actually sign as,
+ * with the field left free text for the one that isn't on the list.
+ */
+export const SIGNER_ROLES = [
+  "Agent / landlord representative",
+  "Tenant",
+  "Co-tenant",
+  "Witness",
+  "Contractor",
+];
+
+const insertSignature = db.query(
+  `INSERT INTO inspection_signatures
+     (checklist_id, signer_name, role, remark, signature, signed_at, added_by, added_by_name)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+   RETURNING id, signer_name, role, remark, signature, signed_at, added_by, added_by_name`
+);
+const listSignatures = db.query(
+  `SELECT id, signer_name, role, remark, signature, signed_at, added_by, added_by_name
+   FROM inspection_signatures WHERE checklist_id = ? AND deleted_at IS NULL ORDER BY id`
+);
+// Names as well as counts: "who signed this afterwards" is a thing somebody
+// searches the list for, and the table is small enough to read whole.
+const allSignatures = db.query(
+  `SELECT checklist_id, signer_name, role FROM inspection_signatures
+   WHERE deleted_at IS NULL ORDER BY id`
+);
+const readSignature = db.query(
+  `SELECT id, checklist_id, added_by, deleted_at FROM inspection_signatures WHERE id = ?`
+);
+const softDeleteSignature = db.query(
+  `UPDATE inspection_signatures SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL`
+);
+
+type SignatureRow = {
+  id: number; signer_name: string; role: string; remark: string; signature: string;
+  signed_at: string; added_by: string; added_by_name: string | null;
+};
+
+const toSignature = (r: SignatureRow): LaterSignature => ({
+  id: r.id,
+  name: r.signer_name,
+  role: r.role,
+  remark: r.remark ?? "",
+  signature: r.signature,
+  signedAt: r.signed_at,
+  addedBy: r.added_by,
+  addedByName: r.added_by_name,
+});
+
+export function inspectionSignatures(checklistId: string): LaterSignature[] {
+  return (listSignatures.all(checklistId) as SignatureRow[]).map(toSignature);
+}
+
+/** How many signed each inspection afterwards, and who — one query for the list. */
+function signatureSummary(): Map<string, { count: number; who: string }> {
+  const summary = new Map<string, { count: number; who: string }>();
+  for (const row of allSignatures.all() as {
+    checklist_id: string; signer_name: string; role: string;
+  }[]) {
+    const seen = summary.get(row.checklist_id) ?? { count: 0, who: "" };
+    seen.count++;
+    seen.who = `${seen.who} ${row.signer_name} ${row.role}`.trim();
+    summary.set(row.checklist_id, seen);
+  }
+  return summary;
+}
+
+/** A signature is a PNG from a canvas, or it is not a signature. */
+const isSignature = (value: string) =>
+  /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(value) && value.length >= 200;
+
+/**
+ * Records a signature against an inspection that has already been signed.
+ *
+ * Anyone signed in may add one, and it is attributed twice: to the person whose
+ * name is on it, and to the account that captured it — often not the same
+ * person, since a tenant signs on somebody else's laptop. Both are printed, so
+ * the addendum never implies that a signature appeared by itself.
+ */
+export function addInspectionSignature(
+  checklistId: string,
+  user: User,
+  input: { name?: unknown; role?: unknown; remark?: unknown; signature?: unknown }
+): { signature: LaterSignature } | { error: string; status: number } {
+  if (!readInspection(checklistId)) {
+    return { error: "That inspection no longer exists — reload the page.", status: 404 };
+  }
+
+  const name = String(input?.name ?? "").trim();
+  const role = String(input?.role ?? "").trim();
+  const remark = String(input?.remark ?? "").trim();
+  const signature = String(input?.signature ?? "");
+
+  if (!name) return { error: "Who is signing? A signature needs a name against it.", status: 400 };
+  if (name.length > SIGNER_MAX) {
+    return { error: `A name can be at most ${SIGNER_MAX} characters.`, status: 400 };
+  }
+  if (!role) return { error: "Say what they are signing as.", status: 400 };
+  if (role.length > ROLE_MAX) return { error: `A role can be at most ${ROLE_MAX} characters.`, status: 400 };
+  if (remark.length > REMARK_MAX) {
+    return { error: `A remark can be at most ${REMARK_MAX} characters.`, status: 400 };
+  }
+  if (!isSignature(signature)) return { error: "Sign in the box before saving.", status: 400 };
+  if (signature.length > SIGNATURE_MAX) {
+    return { error: "That signature is too large to store.", status: 413 };
+  }
+
+  const row = insertSignature.get(
+    checklistId,
+    name,
+    role,
+    remark,
+    signature,
+    new Date().toISOString(),
+    user.username,
+    displayName(user)
+  ) as SignatureRow;
+  console.log(
+    `[${new Date().toISOString()}] inspection ${checklistId.slice(0, 8)} signed by ${name} ` +
+      `(${role}), captured by ${user.username} (signature ${row.id})`
+  );
+  return { signature: toSignature(row) };
+}
+
+/**
+ * Removes a later signature from the page and from future addenda. Soft, and
+ * only the account that captured it or Dan: one that has already gone out on a
+ * PDF shouldn't be able to vanish as though it was never made.
+ */
+export function deleteInspectionSignature(
+  checklistId: string,
+  signatureId: number,
+  user: User
+): { ok: true } | { error: string; status: number } {
+  const row = readSignature.get(signatureId) as
+    | { id: number; checklist_id: string; added_by: string; deleted_at: string | null }
+    | undefined;
+  if (!row || row.checklist_id !== checklistId || row.deleted_at) {
+    return { error: "That signature is already gone — reload the page.", status: 404 };
+  }
+  if (row.added_by !== user.username && !canEditTenants(user)) {
+    return { error: "You can only remove a signature you added.", status: 403 };
+  }
+  softDeleteSignature.run(new Date().toISOString(), user.username, signatureId);
+  console.log(
+    `[${new Date().toISOString()}] inspection ${checklistId.slice(0, 8)} signature ${signatureId} ` +
+      `removed by ${user.username}`
+  );
+  return { ok: true };
+}
+
 /* ------------------------------------------------------------------ counting */
 
 type Tally = {
@@ -515,6 +703,7 @@ const LIST_CSS = `
     .flag.media { background: #eef2fb; color: #2b4a9b; }
     .flag.clean { background: #e3f6e5; color: #1e7d32; }
     .flag.note { background: #fef3c7; color: #92400e; }
+    .flag.sign { background: #ede9fe; color: #5b21b6; }
     .empty td { color: var(--muted); text-align: center; padding: 2rem 0.8rem; }
 
     /* What was found wrong and what was written down, in the row itself: the
@@ -653,6 +842,59 @@ const DETAIL_CSS = `
     .add-note button[disabled] { opacity: 0.6; cursor: default; }
     .add-note .hint { color: var(--muted); font-size: 0.78rem; }
     .add-note .err { color: #991b1b; font-size: 0.8rem; }
+
+    /* Signatures put to the report after it was signed. Apart from the ones
+       above them, and marked in a different colour from the comments, because
+       a signature is a stronger claim than a remark. */
+    .later { border-left: 3px solid #6d28d9; }
+    .later .why { margin: -0.35rem 0 0.9rem; color: var(--muted); font-size: 0.82rem; }
+    .later-sig { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: flex-start;
+      border-top: 1px solid #f1f2f4; padding: 0.8rem 0; }
+    .later-sig:first-of-type { border-top: 0; padding-top: 0.2rem; }
+    .later-sig img { flex: none; width: 190px; height: 62px; object-fit: contain; object-position: left bottom;
+      border-bottom: 1px solid #cbd5e1; }
+    .later-sig .detail { flex: 1 1 14rem; }
+    .later-sig .who { margin: 0; font-size: 0.9rem; font-weight: 600; }
+    .later-sig .who .role { margin-left: 0.4rem; font-weight: 400; color: var(--muted); font-size: 0.8rem; }
+    .later-sig .at { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.15rem 0 0;
+      color: var(--muted); font-size: 0.78rem; }
+    .later-sig .body { margin: 0.4rem 0 0; white-space: pre-wrap; font-size: 0.9rem; color: #374151; }
+    .later-sig .drop { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
+      color: var(--muted); font: inherit; font-size: 0.78rem; text-decoration: underline; }
+    .later-sig .drop:hover { color: #991b1b; }
+    .later-sig .drop[disabled] { opacity: 0.5; cursor: default; }
+
+    .add-sig { margin-top: 0.9rem; border-top: 1px solid #f1f2f4; padding-top: 0.6rem; }
+    .add-sig > summary { cursor: pointer; font: 600 0.85rem system-ui, sans-serif; color: #374151;
+      padding: 0.2rem 0; }
+    .add-sig > summary:hover { color: var(--ink); }
+    .add-sig .fields { display: flex; flex-wrap: wrap; gap: 0.7rem; margin: 0.7rem 0 0; }
+    .add-sig .field { flex: 1 1 14rem; }
+    .add-sig label { display: block; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--muted); font-weight: 600; margin: 0 0 0.25rem; }
+    .add-sig input, .add-sig textarea { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid #d1d5db;
+      border-radius: 6px; font: inherit; font-size: 0.9rem; background: #fff; }
+    .add-sig textarea { min-height: 4rem; resize: vertical; }
+    .add-sig input:focus, .add-sig textarea:focus { outline: 2px solid #93c5fd; outline-offset: -1px;
+      border-color: transparent; }
+    /* The box is signed in with a finger, a stylus or a mouse; touch-action
+       keeps a finger drawing rather than scrolling the page away. */
+    .sigwrap { position: relative; height: 130px; margin-top: 0.7rem; border: 1px dashed #cbd5e1;
+      border-radius: 8px; background: #fff; }
+    .sigwrap canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+    .sigwrap .line { position: absolute; left: 1rem; right: 1rem; bottom: 1.9rem; border-bottom: 1px solid #e5e7eb; }
+    .sigwrap .prompt { position: absolute; left: 1rem; bottom: 0.55rem; color: var(--muted);
+      font-size: 0.75rem; pointer-events: none; }
+    .add-sig .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; margin-top: 0.6rem; }
+    .add-sig button { background: #1f2937; color: #fff; border: 0; border-radius: 6px;
+      padding: 0.42rem 0.85rem; font: 600 0.82rem system-ui, sans-serif; cursor: pointer; }
+    .add-sig button:hover { background: #374151; }
+    .add-sig button[disabled] { opacity: 0.6; cursor: default; }
+    .add-sig button.ghost { background: #fff; color: #374151; border: 1px solid #d1d5db; }
+    .add-sig button.ghost:hover { background: #f9fafb; color: var(--ink); }
+    .add-sig .opt { font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .add-sig .hint { color: var(--muted); font-size: 0.78rem; }
+    .add-sig .err { color: #991b1b; font-size: 0.8rem; }
 
     @media (max-width: 720px) {
       .page { padding: 0 0.75rem 2.5rem; }
@@ -830,6 +1072,180 @@ const NOTES_JS = `
   });
 })();`;
 
+/**
+ * One signature added after the fact, as it appears on the page and as it comes
+ * back from the API when a new one is saved.
+ */
+export function renderLaterSignature(sig: LaterSignature, user: User): string {
+  const mine = sig.addedBy === user.username || canEditTenants(user);
+  const when = `${signedDate(sig.signedAt)} at ${signedTime(sig.signedAt)}`;
+  return `
+      <article class="later-sig" data-signature="${sig.id}">
+        <img src="${escapeAttr(sig.signature)}" alt="${escapeAttr(`${sig.name} signature`)}" />
+        <div class="detail">
+          <p class="who">${escapeHtml(sig.name)}<span class="role">${escapeHtml(sig.role)}</span></p>
+          <p class="at">Signed ${escapeHtml(when)} &middot; captured by ${escapeHtml(
+            sig.addedByName || sig.addedBy
+          )}${mine ? `<button type="button" class="drop" data-act="delete-signature">Remove</button>` : ""}</p>
+          ${sig.remark ? `<p class="body">${escapeHtml(sig.remark)}</p>` : ""}
+        </div>
+      </article>`;
+}
+
+/**
+ * Signing a report that has already been signed.
+ *
+ * The pad is the same idea as the one in the checklist app: a canvas backed at
+ * device resolution and scaled down by CSS, so a line drawn with a finger or a
+ * stylus is sharp rather than blocky. It is sized when the section is opened,
+ * because a canvas inside a closed <details> measures zero.
+ */
+const SIGNATURES_JS = `
+(function () {
+  var card = document.getElementById("later-signatures");
+  if (!card) return;
+  var id = card.dataset.inspection;
+  var list = document.getElementById("signature-list");
+  var empty = document.getElementById("no-signatures");
+  var count = document.getElementById("signature-count");
+  var box = document.getElementById("add-signature");
+  var nameField = document.getElementById("sig-name");
+  var roleField = document.getElementById("sig-role");
+  var remarkField = document.getElementById("sig-remark");
+  var save = document.getElementById("save-signature");
+  var clear = document.getElementById("clear-signature");
+  var error = document.getElementById("signature-error");
+  var prompt = document.getElementById("sig-prompt");
+  var wrap = document.getElementById("sig-pad-wrap");
+  var canvas = document.getElementById("sig-pad");
+  var ctx = canvas.getContext("2d");
+  var drawing = false, last = null, signed = false;
+
+  function problem(message) {
+    error.textContent = message || "";
+    error.hidden = !message;
+  }
+  function retally() {
+    var n = list.querySelectorAll(".later-sig").length;
+    if (empty) empty.hidden = n !== 0;
+    if (count) count.textContent = n === 0 ? "" : n + (n === 1 ? " signature added" : " signatures added");
+  }
+
+  /* Re-sizing clears the bitmap, so anything already drawn is put back. */
+  function size() {
+    var ratio = window.devicePixelRatio || 1;
+    var w = wrap.clientWidth, h = wrap.clientHeight;
+    if (!w || !h) return;
+    var previous = signed ? canvas.toDataURL() : null;
+    canvas.width = Math.round(Math.min(w, 2000) * ratio);
+    canvas.height = Math.round(Math.min(h, 400) * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.lineWidth = 2.2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#111827";
+    if (previous) {
+      var img = new Image();
+      img.onload = function () { ctx.drawImage(img, 0, 0, w, h); };
+      img.src = previous;
+    }
+  }
+  function wipe() {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
+    signed = false;
+    prompt.hidden = false;
+  }
+  function at(e) {
+    var r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+
+  canvas.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* mouse without capture */ }
+    drawing = true;
+    last = at(e);
+    prompt.hidden = true;
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var p = at(e);
+    ctx.beginPath();
+    ctx.moveTo(last.x, last.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    last = p;
+    signed = true;
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (type) {
+    canvas.addEventListener(type, function () { drawing = false; });
+  });
+
+  box.addEventListener("toggle", function () {
+    if (box.open) requestAnimationFrame(size);
+  });
+  window.addEventListener("resize", function () { if (box.open) size(); });
+  clear.addEventListener("click", wipe);
+
+  save.addEventListener("click", function () {
+    var name = nameField.value.trim();
+    var role = roleField.value.trim();
+    if (!name) { problem("Who is signing?"); nameField.focus(); return; }
+    if (!role) { problem("Say what they are signing as."); roleField.focus(); return; }
+    if (!signed) { problem("Sign in the box before saving."); return; }
+
+    save.disabled = true;
+    problem("");
+    fetch("/api/inspections/" + id + "/signatures", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: name, role: role, remark: remarkField.value.trim(),
+        signature: canvas.toDataURL("image/png")
+      })
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That signature wasn't saved.");
+          return data;
+        });
+      })
+      .then(function (data) {
+        // Only cleared once the server has it: a failed save keeps the mark,
+        // which cannot be drawn a second time exactly as it was.
+        list.insertAdjacentHTML("beforeend", data.signature);
+        retally();
+        nameField.value = "";
+        remarkField.value = "";
+        wipe();
+        box.open = false;
+      })
+      .catch(function (err) { problem(err.message); })
+      .then(function () { save.disabled = false; });
+  });
+
+  list.addEventListener("click", function (e) {
+    var drop = e.target.closest('button[data-act="delete-signature"]');
+    if (!drop) return;
+    var article = drop.closest(".later-sig");
+    if (!window.confirm("Remove this signature? It stops printing on the addendum.")) return;
+    drop.disabled = true;
+    problem("");
+    fetch("/api/inspections/" + id + "/signatures/" + article.dataset.signature, { method: "DELETE" })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That signature wasn't removed.");
+        });
+      })
+      .then(function () { article.remove(); retally(); })
+      .catch(function (err) { drop.disabled = false; problem(err.message); });
+  });
+})();`;
+
 function page(title: string, nav: string, navCss: string, css: string, body: string): string {
   return `<!doctype html>
 <html>
@@ -862,7 +1278,7 @@ const UNREADABLE = `<p class="notice"><strong>The checklist database can't be re
  * findings column can have the width: a reader is here to see what the
  * walkthrough turned up, not to admire six columns of counts.
  */
-function listRow(i: Inspection, notes: number): string {
+function listRow(i: Inspection, notes: number, signed: { count: number; who: string } | undefined): string {
   const c = i.checklist;
   const t = tally(c);
   const found = defects(c);
@@ -876,7 +1292,12 @@ function listRow(i: Inspection, notes: number): string {
     (t.videos ? `<span class="flag media">${t.videos} video${t.videos === 1 ? "" : "s"}</span>` : "") +
     // A commented report reads differently from the one that was signed, so the
     // list says so before anyone sends the PDF on.
-    (notes ? `<span class="flag note">${notes} comment${notes === 1 ? "" : "s"}</span>` : "");
+    (notes ? `<span class="flag note">${notes} comment${notes === 1 ? "" : "s"}</span>` : "") +
+    // A report somebody put their name to afterwards is a different document
+    // from the one that was submitted, so the list says so too.
+    (signed
+      ? `<span class="flag sign">${signed.count} signed later</span>`
+      : "");
 
   // Defects first, with their notes, then everything else that was written.
   const entries = [
@@ -915,6 +1336,8 @@ function listRow(i: Inspection, notes: number): string {
     c.name,
     c.email,
     c.agentName ?? "",
+    // Whoever put their name to it afterwards, so they can be searched for too.
+    signed?.who ?? "",
     signedDate(i.createdAt),
     ...found.map((d) => `${d.room} ${d.label} ${d.condition} ${d.notes}`),
     ...wrote.map((w) => `${w.where} ${w.what}`),
@@ -950,6 +1373,7 @@ export function renderInspectionsList(nav: string, navCss: string): string {
 
   const withPoor = inspections.filter((i) => tally(i.checklist).poor > 0).length;
   const counts = noteCounts();
+  const signed = signatureSummary();
   const body = `  <h1>Inspections</h1>
   <p class="lede">Every signed move-in condition report, newest first &mdash;
     ${inspections.length} in all${withPoor ? `, ${withPoor} with something marked poor` : ""}.
@@ -977,7 +1401,9 @@ export function renderInspectionsList(nav: string, navCss: string): string {
       <tbody>
         ${
           inspections.length
-            ? inspections.map((i) => listRow(i, counts.get(i.id) ?? 0)).join("") +
+            ? inspections
+                .map((i) => listRow(i, counts.get(i.id) ?? 0, signed.get(i.id)))
+                .join("") +
               `\n        <tr class="empty no-match" hidden><td colspan="6">No inspection matches that.</td></tr>`
             : `<tr class="empty"><td colspan="6">No inspections have been signed yet.</td></tr>`
         }
@@ -1047,6 +1473,7 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
   const t = tally(c);
   const poor = poorItems(c);
   const notes = inspectionNotes(inspection.id);
+  const laterSignatures = inspectionSignatures(inspection.id);
   const when = `${signedDate(inspection.createdAt)} at ${signedTime(inspection.createdAt)}`;
 
   const facts = [
@@ -1072,9 +1499,9 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
     </div>
     <div class="pdf-links">
       <a class="pdf-link" href="/inspections/${escapeAttr(inspection.id)}.pdf" target="_blank" rel="noopener">
-        ${notes.length ? "PDF with comments" : "Signed PDF"}</a>
+        ${notes.length || laterSignatures.length ? "PDF with the addendum" : "Signed PDF"}</a>
       ${
-        notes.length
+        notes.length || laterSignatures.length
           ? `<a class="plain" href="/inspections/${escapeAttr(inspection.id)}.pdf?original=1"
         target="_blank" rel="noopener">As signed, without the addendum</a>`
           : ""
@@ -1132,6 +1559,62 @@ export function renderInspection(id: string, user: User, nav: string, navCss: st
       }
     </div>
   </section>
+
+  <h2 class="band">Signed after the walkthrough</h2>
+  <section class="card later" id="later-signatures" data-inspection="${escapeAttr(inspection.id)}">
+    <p class="why">Somebody who wasn&rsquo;t there when this was signed can put their name to it here &mdash;
+      the agent who couldn&rsquo;t make the walkthrough, a co-tenant, a witness.
+      <strong>Nothing above changes:</strong> the conditions and the notes are what was recorded on the day.
+      A signature added here sits beside them, with a remark of its own if there is something to say, and
+      prints in the addendum after the signed pages. <span id="signature-count">${
+        laterSignatures.length
+          ? `${laterSignatures.length} signature${laterSignatures.length === 1 ? "" : "s"} added`
+          : ""
+      }</span></p>
+    <div id="signature-list">${laterSignatures.map((sig) => renderLaterSignature(sig, user)).join("")}</div>
+    <p class="no-notes" id="no-signatures"${laterSignatures.length ? " hidden" : ""}>
+      Nobody has signed this since it was submitted.</p>
+
+    <details class="add-sig" id="add-signature">
+      <summary>Add a signature</summary>
+      <div class="fields">
+        <div class="field">
+          <label for="sig-name">Full name of the person signing</label>
+          <input id="sig-name" type="text" maxlength="120" autocomplete="off"
+            placeholder="${escapeAttr(c.agentName || "Their full name")}" />
+        </div>
+        <div class="field">
+          <label for="sig-role">Signing as</label>
+          <input id="sig-role" type="text" maxlength="80" autocomplete="off" list="sig-roles"
+            value="${escapeAttr(c.agentName && !c.agentSignature ? SIGNER_ROLES[0] : "")}"
+            placeholder="${escapeAttr(SIGNER_ROLES[0])}" />
+          <datalist id="sig-roles">${SIGNER_ROLES.map(
+            (role) => `<option value="${escapeAttr(role)}"></option>`
+          ).join("")}</datalist>
+        </div>
+      </div>
+      <div class="fields">
+        <div class="field" style="flex-basis:100%">
+          <label for="sig-remark">Anything they want on the record <span class="opt">optional</span></label>
+          <textarea id="sig-remark" maxlength="${REMARK_MAX}"
+            placeholder="What they are agreeing to, what they saw, what has been put right since&hellip;"></textarea>
+        </div>
+      </div>
+      <div class="sigwrap" id="sig-pad-wrap">
+        <canvas id="sig-pad"></canvas>
+        <div class="line"></div>
+        <span class="prompt" id="sig-prompt">Sign here</span>
+      </div>
+      <div class="row">
+        <button type="button" id="save-signature">Add signature</button>
+        <button type="button" class="ghost" id="clear-signature">Clear</button>
+        <span class="hint">Captured by ${escapeHtml(displayName(user))} &middot;
+          the record shows both names</span>
+        <span class="err" id="signature-error" hidden></span>
+      </div>
+    </details>
+  </section>
+  <script>${SIGNATURES_JS}</script>
 
   <h2 class="band">Comments added after signing</h2>
   <section class="card comments" id="comments" data-inspection="${escapeAttr(inspection.id)}">
@@ -1218,8 +1701,9 @@ export async function serveInspectionPdf(id: string, original = false): Promise<
   }
 
   const notes = original ? [] : inspectionNotes(id);
+  const signatures = original ? [] : inspectionSignatures(id);
   let bytes = signed;
-  if (notes.length) {
+  if (notes.length || signatures.length) {
     try {
       const c = inspection.checklist;
       bytes = await appendAddendum(
@@ -1231,11 +1715,12 @@ export async function serveInspectionPdf(id: string, original = false): Promise<
           signedAt: c.signedAt || inspection.createdAt,
           signedPages: await countPages(signed),
         },
-        notes
+        notes,
+        signatures
       );
     } catch (err) {
-      // A comment that can't be laid out must not cost anyone the signed
-      // document; the page still shows every comment either way.
+      // Something that can't be laid out must not cost anyone the signed
+      // document; the page still shows every comment and signature either way.
       console.warn(`Could not append the addendum for ${id}; serving the signed PDF alone.`, err);
       bytes = signed;
     }
@@ -1244,10 +1729,10 @@ export async function serveInspectionPdf(id: string, original = false): Promise<
   return new Response(bytes, {
     headers: {
       "Content-Type": "application/pdf",
-      // Named so a file with comments on it can't be mistaken for the signed
+      // Named so a file carrying an addendum can't be mistaken for the signed
       // copy once it's sitting in somebody's downloads folder.
       "Content-Disposition": `inline; filename="${
-        notes.length ? name.replace(/\.pdf$/, "") + "_with-comments.pdf" : name
+        notes.length || signatures.length ? name.replace(/\.pdf$/, "") + "_with-addendum.pdf" : name
       }"`,
       ...NO_STORE,
     },

@@ -1,6 +1,6 @@
 /**
- * Comments added to an inspection after it was signed, appended to the signed
- * PDF as an addendum.
+ * Comments and signatures added to an inspection after it was signed, appended
+ * to the signed PDF as an addendum.
  *
  * The signed pages are never touched. They are the document a tenant and an
  * agent put their names to, and a record that can be edited afterwards is worth
@@ -30,6 +30,23 @@ export type AddendumNote = {
   author: string;
   authorName: string | null;
   createdAt: string;
+};
+
+/**
+ * A signature put to the report after it was signed. The PNG is the mark the
+ * canvas produced; the remark is whatever the signer wanted on the record,
+ * which is often nothing.
+ */
+export type AddendumSignature = {
+  id: number;
+  name: string;
+  role: string;
+  remark: string;
+  /** A PNG data URL. */
+  signature: string;
+  signedAt: string;
+  addedBy: string;
+  addedByName: string | null;
 };
 
 export type AddendumMeta = {
@@ -91,6 +108,17 @@ function wrapBody(text: string, font: PDFFont, size: number, width: number): str
   return lines;
 }
 
+/** The PNG behind a data URL, or null if it isn't one we can draw. */
+function pngBytes(dataUrl: string): Uint8Array | null {
+  const match = /^data:image\/png;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl ?? ""));
+  if (!match) return null;
+  try {
+    return new Uint8Array(Buffer.from(match[1], "base64"));
+  } catch {
+    return null;
+  }
+}
+
 const STAMP_FORMAT = new Intl.DateTimeFormat("en-US", {
   timeZone: process.env.CHECKLIST_TZ ?? "America/Los_Angeles",
   year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
@@ -102,16 +130,18 @@ function stamp(iso: string): string {
 }
 
 /**
- * The signed PDF with the comments appended. Returns the bytes unchanged when
- * there is nothing to add, so an inspection nobody has commented on serves the
- * file straight off the disk.
+ * The signed PDF with everything added since appended to it: signatures put to
+ * the report after it was submitted, then the comments. Returns the bytes
+ * unchanged when there is nothing to add, so an inspection nobody has touched
+ * serves the file straight off the disk.
  */
 export async function appendAddendum(
   signed: Uint8Array,
   meta: AddendumMeta,
-  notes: AddendumNote[]
+  notes: AddendumNote[],
+  signatures: AddendumSignature[] = []
 ): Promise<Uint8Array> {
-  if (!notes.length) return signed;
+  if (!notes.length && !signatures.length) return signed;
 
   const doc = await PDFDocument.load(signed);
   const regular = await doc.embedFont(StandardFonts.Helvetica);
@@ -137,8 +167,16 @@ export async function appendAddendum(
   };
 
   // ---- heading -------------------------------------------------------------
+  // Named for what is actually on it. A document headed "comments" that turns
+  // out to carry a signature is the kind of surprise this addendum exists to
+  // avoid.
+  const title = signatures.length
+    ? notes.length
+      ? "Addendum - added after signing"
+      : "Addendum - signatures added after signing"
+    : "Addendum - comments added after signing";
   y -= 6;
-  draw("Addendum - comments added after signing", MARGIN, 16, bold);
+  draw(title, MARGIN, 16, bold);
   y -= 17;
   draw(`${meta.address}  ·  ${meta.tenant}`, MARGIN, 10.5, regular, MUTED);
   y -= 13;
@@ -160,19 +198,95 @@ export async function appendAddendum(
   y -= 20;
 
   // The one thing a reader of this page has to understand, said before the
-  // comments rather than in a footnote after them.
-  for (const line of wrapLine(
-    "These comments were added after the checklist was signed. They are not part of what " +
+  // contents rather than in a footnote after them.
+  const preamble = signatures.length
+    ? "Everything on these pages was added after the checklist was signed. Nothing here changes " +
+      "what was recorded on the day: the conditions, the notes and the signatures on the pages " +
+      "above are as they were certified. The signatures below were made later, each by the person " +
+      "named against it, and each is shown with the time it was made and the account that " +
+      "captured it." +
+      (notes.length
+        ? " The comments that follow them were written by the office and are signed by nobody."
+        : "")
+    : "These comments were added after the checklist was signed. They are not part of what " +
       "the tenant and the agent certified on the pages above, and neither party has signed them. " +
-      "Each is shown with who wrote it and when.",
-    italic,
-    9,
-    CONTENT_W
-  )) {
+      "Each is shown with who wrote it and when.";
+  for (const line of wrapLine(preamble, italic, 9, CONTENT_W)) {
     draw(line, MARGIN, 9, italic, MUTED);
     y -= 12;
   }
   y -= 10;
+
+  /** A heading over a run of entries, used only when there are two runs. */
+  const section = (label: string) => {
+    ensure(30);
+    draw(label, MARGIN, 11.5, bold);
+    y -= 16;
+  };
+
+  // ---- signatures made after the fact ---------------------------------------
+  if (signatures.length) {
+    if (notes.length) section("Signatures");
+    for (const [index, sig] of signatures.entries()) {
+      const remarkLines = wrapBody(sig.remark, regular, 10, CONTENT_W - 12);
+      const bytes = pngBytes(sig.signature);
+      let mark = null;
+      try {
+        mark = bytes ? await doc.embedPng(bytes) : null;
+      } catch {
+        // A signature that can't be embedded still gets its line: the fact that
+        // this person signed is the record, and dropping the entry would hide it.
+        mark = null;
+      }
+      const scale = mark ? Math.min(180 / mark.width, 44 / mark.height, 1) : 0;
+      const markW = mark ? mark.width * scale : 0;
+      const markH = mark ? mark.height * scale : 0;
+
+      // The mark, the name and the stamp belong together on one page.
+      ensure(16 + markH + 26 + Math.min(remarkLines.length, 2) * 13);
+
+      const who = `${index + 1}.  ${sig.name}`;
+      draw(who, MARGIN, 10.5, bold);
+      draw(
+        `  ·  ${sig.role}`,
+        MARGIN + bold.widthOfTextAtSize(winAnsi(who), 10.5),
+        9,
+        regular,
+        MUTED
+      );
+      y -= 15;
+
+      if (mark) {
+        page.drawImage(mark, { x: MARGIN + 12, y: y - markH, width: markW, height: markH });
+        y -= markH + 3;
+      } else {
+        draw("(signature on file; it could not be drawn here)", MARGIN + 12, 9, italic, MUTED);
+        y -= 12;
+      }
+      page.drawLine({
+        start: { x: MARGIN + 12, y }, end: { x: MARGIN + 12 + Math.max(markW, 180), y },
+        thickness: 0.75, color: RULE,
+      });
+      y -= 12;
+
+      draw(
+        `Signed ${stamp(sig.signedAt)}  ·  captured by ${sig.addedByName || sig.addedBy}`,
+        MARGIN + 12, 8.5, regular, MUTED
+      );
+      y -= 14;
+
+      for (const line of remarkLines) {
+        ensure(13);
+        draw(line, MARGIN + 12, 10, regular);
+        y -= 13;
+      }
+      y -= 10;
+    }
+    if (notes.length) {
+      y -= 2;
+      section("Comments");
+    }
+  }
 
   // ---- the comments --------------------------------------------------------
   notes.forEach((note, index) => {

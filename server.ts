@@ -28,11 +28,14 @@ import {
 } from "./plates";
 import {
   addInspectionNote,
+  addInspectionSignature,
   deleteInspectionNote,
+  deleteInspectionSignature,
   isChecklistPath,
   proxyChecklistApp,
   renderInspection,
   renderInspectionsList,
+  renderLaterSignature,
   renderNote,
   serveInspectionPdf,
   serveInspectionUpload,
@@ -1649,6 +1652,46 @@ const server = Bun.serve({
         { ok: true, note: renderNote(result.note, user) },
         { status: 201, headers: { "Cache-Control": "no-store, private" } }
       );
+    }
+
+    /**
+     * Signing an inspection that has already been signed — the agent who
+     * couldn't make the walkthrough, a co-tenant, a witness. Anyone signed in
+     * may capture one; removing it is limited to whoever captured it (or Dan),
+     * inside deleteInspectionSignature.
+     *
+     * Like the comments, these live in the CRM's own database and print in the
+     * addendum after the signed pages. Nothing about the signed checklist or
+     * the PDF on disk changes — a later signature is added beside the record,
+     * never into it.
+     */
+    const inspectionSigs = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/signatures$/);
+    if (inspectionSigs) {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      let body: any;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "expected a JSON body" }, { status: 400 });
+      }
+      const result = addInspectionSignature(inspectionSigs[1], user, body ?? {});
+      if ("error" in result) {
+        return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
+      }
+      return Response.json(
+        { ok: true, signature: renderLaterSignature(result.signature, user) },
+        { status: 201, headers: { "Cache-Control": "no-store, private" } }
+      );
+    }
+
+    const inspectionSig = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/signatures\/(\d+)$/);
+    if (inspectionSig) {
+      if (req.method !== "DELETE") return new Response("Method not allowed", { status: 405 });
+      const result = deleteInspectionSignature(inspectionSig[1], Number(inspectionSig[2]), user);
+      if ("error" in result) {
+        return Response.json({ error: result.error }, { status: result.status, headers: { "Cache-Control": "no-store" } });
+      }
+      return Response.json({ ok: true }, { headers: { "Cache-Control": "no-store" } });
     }
 
     const inspectionNote = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/notes\/(\d+)$/);
