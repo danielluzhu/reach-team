@@ -42,6 +42,9 @@ import {
   setPropertyAddresses,
   setPropertyCity,
   tourEventFrom,
+  unscheduledLeads,
+  setUnscheduledLeads,
+  rollUnscheduledTours,
 } from "./calendar";
 
 const [cmd, ...args] = process.argv.slice(2);
@@ -157,6 +160,58 @@ switch (cmd) {
       break;
     }
     die(`unknown: guides ${sub}`);
+  }
+
+  /**
+   * Who an unscheduled tour is offered to, and what is currently waiting for
+   * one of them. Kept as a list of its own rather than assumed from the
+   * addresses on file, so adding a third guide's email doesn't quietly start
+   * sending them everybody's placeholders.
+   */
+  case "unscheduled": {
+    const [sub, ...rest] = args;
+    const known = guideEmails();
+    if (!sub || sub === "list") {
+      const leads = unscheduledLeads();
+      console.log(
+        leads.length
+          ? leads
+              .map((n) => `  ${n.padEnd(12)} ${known[n.toLowerCase()] ?? "(no email on file)"}`)
+              .join("\n")
+          : "  nobody — an unscheduled tour would invite the office only"
+      );
+      const waiting = db
+        .query(
+          `SELECT title, starts_at, state FROM tour_events
+           WHERE title LIKE '%(To schedule)' ORDER BY starts_at`
+        )
+        .all() as { title: string; starts_at: string; state: string }[];
+      console.log(
+        waiting.length
+          ? `\n${waiting.length} waiting to be picked up:\n` +
+              waiting.map((w) => `  ${w.starts_at}  ${w.title}  [${w.state}]`).join("\n")
+          : "\nNothing is waiting to be picked up."
+      );
+      break;
+    }
+    if (sub === "set") {
+      if (!rest.length) die("usage: calendar unscheduled set <name> [<name>…]");
+      setUnscheduledLeads(rest, "cli");
+      for (const name of rest) {
+        if (!known[name.toLowerCase()]) {
+          console.warn(`  warning: no email on file for ${name} — calendar guides set ${name} <email>`);
+        }
+      }
+      console.log(`unscheduled tours now go to ${rest.join(" and ")}`);
+      break;
+    }
+    if (sub === "roll") {
+      // What the worker does every couple of minutes, on demand.
+      const moved = rollUnscheduledTours();
+      console.log(moved ? `moved ${moved} on to tomorrow morning` : "nothing needed moving");
+      break;
+    }
+    die(`unknown: unscheduled ${sub}`);
   }
 
   case "properties": {
@@ -373,6 +428,9 @@ switch (cmd) {
       "bun run calendar guides                       list guide → email",
       "bun run calendar guides set <name> <email>    set a guide's address",
       "bun run calendar guides rm <name>             forget one",
+      "bun run calendar unscheduled                  who an unscheduled tour goes to",
+      "bun run calendar unscheduled set <name...>    change who it goes to",
+      "bun run calendar unscheduled roll             move waiting slots to tomorrow",
       "bun run calendar properties                   street line → full address",
       "bun run calendar properties set <street> <address>",
       "bun run calendar properties rm <street>",

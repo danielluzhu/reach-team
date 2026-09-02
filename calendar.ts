@@ -48,6 +48,9 @@ const GUIDES_KEY = "tour_guide_emails";
 /** Settings key holding the street line → full postal address map. */
 const PROPERTIES_KEY = "property_addresses";
 
+/** Settings key holding who an unscheduled tour is offered to. */
+const LEADS_KEY = "unscheduled_tour_leads";
+
 /** Settings key holding the city the properties are in. */
 const CITY_KEY = "property_city";
 
@@ -140,6 +143,72 @@ export type TourEvent = {
 };
 
 /** Column name → index, so a re-ordered sheet doesn't quietly read the wrong field. */
+/* ------------------------------------------------------- unscheduled tours */
+
+/**
+ * A tour nobody has agreed a time for yet.
+ *
+ * An enquiry arrives, somebody types the prospect and the property, and the
+ * time is the part still being negotiated. Until now that row sat on the sheet
+ * doing nothing: no date, so no event, so nothing in anybody's day to remind
+ * them it is waiting.
+ *
+ * Marked `Unscheduled` in the Status column, such a row books a **placeholder**
+ * — tomorrow at 8am — and invites both tour leads rather than one. Whoever can
+ * run it drags it to when they can and puts their name in the Tour Guide
+ * column, at which point it is an ordinary tour led by them.
+ *
+ * A row stops being unscheduled the moment it has a date, whatever Status still
+ * says: the date is the agreement. That is also what keeps the roll-forward
+ * below from dragging a slot somebody has just chosen back to 8am tomorrow.
+ */
+const UNSCHEDULED = /^un-?scheduled$/i;
+
+/** 8am, and 30 minutes like every other tour: a slot, not a commitment. */
+const PLACEHOLDER_TIME = "08:00";
+
+/** Today where the properties are, not where the server is. */
+const DAY_IN_TOUR_ZONE = new Intl.DateTimeFormat("en-CA", {
+  timeZone: TOUR_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/** The placeholder's date: tomorrow, read off the calendar the tours run on. */
+export function placeholderDate(now = new Date()): string {
+  const today = DAY_IN_TOUR_ZONE.format(now);
+  const [y, m, d] = today.split("-").map(Number) as [number, number, number];
+  // Built in UTC purely as arithmetic on a Y-M-D, so no zone shifts it back.
+  const next = new Date(Date.UTC(y, m - 1, d + 1));
+  return next.toISOString().slice(0, 10);
+}
+
+/**
+ * Who an unscheduled tour is offered to. Configured rather than written here —
+ * who runs tours changes — and falling back to everyone with an address on
+ * file, which is the two of them today.
+ */
+export function unscheduledLeads(): string[] {
+  const row = readSetting.get(LEADS_KEY) as { value: string } | undefined;
+  if (row) {
+    try {
+      const parsed = JSON.parse(row.value);
+      if (Array.isArray(parsed)) {
+        const names = parsed.map((n) => String(n).trim()).filter(Boolean);
+        if (names.length) return names;
+      }
+    } catch {
+      /* fall through to the addresses on file */
+    }
+  }
+  return Object.keys(guideEmails()).map((name) => name.replace(/\b\w/g, (c) => c.toUpperCase()));
+}
+
+export function setUnscheduledLeads(names: string[], updatedBy = "cli"): void {
+  writeSetting.run(LEADS_KEY, JSON.stringify(names.map((n) => n.trim()).filter(Boolean)), updatedBy);
+}
+
 function columnIndex(columns: any[]): Record<string, number> {
   const idx: Record<string, number> = {};
   columns.forEach((c, i) => {
@@ -411,13 +480,26 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   const idx = columnIndex(columns);
   const name = cell(row, idx, "Name");
   const location = cell(row, idx, "Location");
-  const date = cell(row, idx, "Date");
-  if (!name || !location || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const dated = cell(row, idx, "Date");
+  const hasDate = /^\d{4}-\d{2}-\d{2}$/.test(dated);
+  const openToBoth = UNSCHEDULED.test(cell(row, idx, "Status"));
+  // Two separate things, and conflating them uninvited the person who had just
+  // taken the tour. `placeholder` is about the *time*: no date agreed, so the
+  // slot is tomorrow morning and walks forward. `openToBoth` is about *who*:
+  // nobody has put their name to it, so it goes to both leads — and that stays
+  // true after somebody drags it into a real slot without typing their name.
+  const placeholder = !hasDate && openToBoth;
+  if (!name || !location || (!hasDate && !placeholder)) return null;
+  const date = hasDate ? dated : placeholderDate();
 
   const street = streetOf(location);
   const notes = cell(row, idx, "Personal Opinion");
   const virtual = VIRTUAL.test(notes);
-  const guides = guideNames(cell(row, idx, "Tour Guide"));
+  // Nobody named on an unscheduled row means it is going to both leads, which
+  // is the point of it. A name typed there takes it, and the event narrows to
+  // them on the next save.
+  const named = guideNames(cell(row, idx, "Tour Guide"));
+  const guides = named.length ? named : openToBoth ? unscheduledLeads() : named;
 
   const known = guideEmails();
   const guestSet = new Set(STANDING_GUESTS);
@@ -430,10 +512,15 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
 
   const title =
     `${streetLabel(street)} ${name} <> ${guides.join(" & ") || "unassigned"}` +
-    (virtual ? " (Virtual)" : "");
+    (virtual ? " (Virtual)" : "") +
+    // Says what it is at a glance in a week's grid: a slot to be moved, not a
+    // tour anybody has agreed to at eight in the morning.
+    (placeholder ? " (To schedule)" : "");
 
-  const { hhmm, note: timeNote } = parseTime(cell(row, idx, "Time"));
-  const endCell = parseTime(cell(row, idx, "End Time")).hhmm;
+  const parsed = parseTime(cell(row, idx, "Time"));
+  const hhmm = placeholder ? PLACEHOLDER_TIME : parsed.hhmm;
+  const timeNote = placeholder ? "" : parsed.note;
+  const endCell = placeholder ? null : parseTime(cell(row, idx, "End Time")).hhmm;
 
   const phone = cell(row, idx, "Phone");
   const lines = [`Prospect: ${esc(name)}`, ...contactLines(phone)];
@@ -447,6 +534,19 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   add("Source", cell(row, idx, "Source"));
   add("Status", cell(row, idx, "Status"));
   add("Tenancy", cell(row, idx, "Tenancy?"));
+  if (placeholder) {
+    lines.push(
+      "<br><b>This time is a placeholder.</b> Nobody has agreed a time for this tour yet. " +
+        "Whoever can run it: move this event to when you can, and put your name in the " +
+        "Tour Guide column on the sheet. Moving it here updates the sheet by itself."
+    );
+  } else if (openToBoth && !named.length) {
+    // It has a time now, but still nobody's name against it.
+    lines.push(
+      "<br><b>Nobody has taken this one yet.</b> Whoever runs it, put your name in the " +
+        "Tour Guide column on the sheet."
+    );
+  }
   lines.push(`Host: ${esc(guides.join(" & ") || "unassigned")}`);
   lines.push(`Format: ${virtual ? "Virtual tour" : "In person"}`);
   lines.push(`Address: ${esc(fullAddress(street))}`);
@@ -454,7 +554,11 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   if (notes) lines.push(`<br>Notes: ${esc(notes)}`);
 
   return {
-    key: tourKey(name, street, date),
+    // Keyed without the date while it is a placeholder, or rolling it to the
+    // next morning would book a second event every day instead of moving the
+    // one that is already out. Giving it a real date rekeys it, which the
+    // pairing below recognises as the same tour moved.
+    key: tourKey(name, street, placeholder ? "unscheduled" : date),
     title,
     location: fullAddress(street),
     description: lines.join("<br>"),
@@ -465,7 +569,7 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
     timeZone: TOUR_TIMEZONE,
     virtual,
     unknownGuides,
-    identity: { name, street, date },
+    identity: { name, street, date: placeholder ? "" : date },
   };
 }
 
@@ -788,9 +892,13 @@ export function startCalendarWorker() {
   // edit is not urgent — two minutes is soon enough, and it keeps well inside
   // Apps Script's daily execution budget.
   pollTimer = setInterval(() => {
-    void pollCalendarChanges().catch((err) =>
-      console.error(`[${new Date().toISOString()}] reading calendar edits failed:`, err.message)
-    );
+    // Poll first, then roll: a tour dragged to a real slot has become a date on
+    // the sheet by the time the roll looks at it, so the roll leaves it alone.
+    void pollCalendarChanges()
+      .then(() => rollUnscheduledTours())
+      .catch((err) =>
+        console.error(`[${new Date().toISOString()}] reading calendar edits failed:`, err.message)
+      );
   }, 120_000);
   // Don't hold the process open just for the background loops.
   timer.unref?.();
@@ -1030,6 +1138,63 @@ export type CalendarChange = {
  * its next save, which is the behaviour the sheet already has for every other
  * concurrent edit.
  */
+/**
+ * Moves every placeholder still waiting on to tomorrow morning.
+ *
+ * A tour nobody has picked up is still waiting tomorrow, and a slot sitting in
+ * yesterday is a slot nobody looks at. So while a row stays unscheduled its
+ * placeholder walks forward with the days, and stops the moment the row has a
+ * date — typed on the sheet, or dragged on the calendar and synced back.
+ *
+ * Two things keep it from arguing with somebody who has just chosen a time.
+ * It runs *after* a poll, so a drag has already become a date on the sheet by
+ * the time this looks. And it only ever moves a slot that is in the past:
+ * anything already sitting at tomorrow or later is somebody's choice, not a
+ * stale placeholder.
+ */
+export function rollUnscheduledTours(): number {
+  const sheet = db.query(`SELECT columns, rows FROM sheets WHERE id = 'tours'`).get() as
+    | { columns: string; rows: string }
+    | undefined;
+  if (!sheet) return 0;
+
+  let columns: any[];
+  let rows: any[][];
+  try {
+    columns = JSON.parse(sheet.columns);
+    rows = JSON.parse(sheet.rows);
+  } catch {
+    return 0;
+  }
+
+  let moved = 0;
+  for (const row of rows) {
+    const event = tourEventFrom(row, columns);
+    // identity.date is empty only for a placeholder; everything else is a tour
+    // with a time somebody agreed to.
+    if (!event || event.identity.date !== "") continue;
+
+    const existing = readEvent.get(event.key) as QueueRow | undefined;
+    // Never queued — a row that predates the feature. Booking it from here
+    // would be the surprise `calendar backfill` exists to avoid.
+    if (!existing) continue;
+
+    const stored = JSON.parse((existing as any).payload) as TourEvent;
+    const was = (stored.start ?? stored.allDayOn ?? "").slice(0, 10);
+    const now = (event.start ?? event.allDayOn ?? "").slice(0, 10);
+    if (!was || !now || was >= now) continue;
+
+    const payload = JSON.stringify(event);
+    const sig = createHash("sha256").update(payload).digest("hex").slice(0, 16);
+    updateEventRow.run(event.title, event.start ?? event.allDayOn ?? "", payload, sig, event.key);
+    moved++;
+    console.log(
+      `[${new Date().toISOString()}] unscheduled tour "${event.title}" moved on to ${now} 08:00`
+    );
+  }
+  return moved;
+}
+
 export async function pollCalendarChanges(): Promise<CalendarChange[]> {
   if (!calendarConfigured()) return [];
   const rows = sentEvents.all() as {

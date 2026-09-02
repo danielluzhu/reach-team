@@ -665,6 +665,54 @@ column for either. A tour counts as **virtual** when its notes say so
 books the time outside the brackets, with what was inside it kept in the
 description as a time note.
 
+### Tours nobody has a time for yet
+
+An enquiry arrives, somebody types the prospect and the property, and the time
+is the part still being negotiated. That row used to sit on the sheet doing
+nothing — no date, so no event, so nothing in anybody's day saying it was
+waiting.
+
+Put **`Unscheduled`** in the row's **Status** column and it books a
+**placeholder** instead: tomorrow at 8am, half an hour like any other tour,
+titled `… <> Andrew & Harsh (To schedule)` and inviting **both** tour leads
+rather than one. The invitation says what it is — *this time is a placeholder;
+move it to when you can and put your name in the Tour Guide column*.
+
+Then either of them takes it, whichever way is to hand:
+
+- **Drag it on the calendar** to a slot that suits them. The poll pulls the new
+  date and time into the sheet, as it does for any tour, and the slot stops
+  moving. Both stay invited until somebody is named.
+- **Type a name in Tour Guide.** The event narrows to that person as host, and
+  the other lead comes off the invitation on the next save.
+
+Either order works, and doing both is the normal case.
+
+**While it is still waiting, the placeholder walks forward** — each poll moves
+it to the next morning, so a tour nobody has picked up is always in tomorrow
+rather than rotting in last week. Two things stop that arguing with somebody
+who has just chosen a time: the roll runs *after* the poll, so a drag has
+already become a date on the sheet by the time it looks, and it only ever moves
+a slot that is in the **past**. Anything sitting at tomorrow or later is
+somebody's choice.
+
+Underneath, a placeholder is keyed without its date — otherwise walking it
+forward would book a new event every morning instead of moving the one that is
+already out. Giving it a real date rekeys it, which the pairing above reads as
+the same tour moved, so no second invitation goes out.
+
+Who it goes to is a list in settings, not two names in the code:
+
+```sh
+bun run calendar unscheduled                  # who, and what is waiting
+bun run calendar unscheduled set Andrew Harsh
+bun run calendar unscheduled roll             # what the worker does anyway
+```
+
+It is a list of its own rather than "everyone with an email on file", so adding
+a third guide's address doesn't quietly start sending them everybody's
+placeholders. A name with no address on file is warned about when it is set.
+
 ### How it gets to Google
 
 `server.ts` cannot talk to Google on its own. A **Google Apps Script web app**,
