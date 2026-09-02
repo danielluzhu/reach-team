@@ -941,8 +941,33 @@ than four lines is clamped with a **Show all N** under it, and **Show all
 findings** in the toolbar unclamps the page. The clamp is CSS — the text is
 still in the row, so the browser's own find still hits it, and so does the
 filter box: typing `dishwasher` or `smoke detector` finds the report somebody
-half remembers and unclamps what it says, as well as matching property, tenant,
-agent and date.
+half remembers and unclamps what it says.
+
+### The filter box
+
+It matches **every word typed, in any order**, rather than the whole phrase in
+one run. `4544 kenneth` is a building and a person, and they sit nowhere near
+each other in the row; before this it found nothing, which reads as a search
+that doesn't work. The query and the row are flattened the same way — lower
+case, punctuation reduced to spaces — so `Unit 003`, `unit 3` and `#3` meet in
+the middle.
+
+Two things stop numbers becoming noise. A short number has to match a **word**,
+so `3` finds Unit 003 and not 4735 22nd Ave NE. And `unit 3` is read as a unit
+rather than as the digit 3 somewhere in the row, which would otherwise answer
+with every report that has a Bedroom 3 in it.
+
+It also searches **who the office has on the lease**, from the Leases sheet,
+keyed on building and unit — `4544 20th Ave NE, Unit 003` against `4544 20th Ave
+NE Seattle` + `003`, with `U1`/`Unit 1`/`001` and `Upper Unit`/`Upper` treated as
+the same unit. A checklist carries whoever signed it, which is one of the people
+who live there and often not the one the unit is remembered by: a housemate
+signs the walkthrough, and the report becomes unfindable under the leaseholder's
+name. Those names are searchable but **not shown** — the sheet keeps past
+tenancies too, and printing an old name beside a report as though it were
+current would be worse than not printing it. Where no unit row matches, the
+building's tenants are used only if there are four or fewer of them: a house is
+its tenants, a fifty-unit building is not.
 
 Opening a report shows every room and item with its notes, a **Marked
 poor** summary at the top when there is anything to answer for, the photos and

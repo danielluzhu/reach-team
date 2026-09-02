@@ -1558,10 +1558,46 @@ const LIST_JS = `
 
   if (box) {
     box.addEventListener("input", function () {
-      var q = box.value.trim().toLowerCase();
+      /* Every word has to appear, not the whole phrase in one run. "4544
+         kenneth" is a building and a person and they are nowhere near each
+         other in the row; before this it found nothing, which reads as a
+         search that doesn't work. Flattened the same way the row was, so
+         punctuation and case can't come between them. */
+      var q = box.value.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
+      var words = q ? q.split(" ") : [];
+
+      /* "unit 3" is a unit, not the digit 3 somewhere in the row — otherwise
+         every report with a Bedroom 3 in it answers. The words are taken out
+         of the text search and asked of the unit itself. */
+      var unitWanted = null;
+      var rest = [];
+      for (var w = 0; w < words.length; w++) {
+        if (/^(unit|apt|apartment)$/.test(words[w]) && words[w + 1]) {
+          unitWanted = words[w + 1].replace(/^0+(?=[0-9])/, "");
+          w++;
+          continue;
+        }
+        rest.push(words[w]);
+      }
+
+      var terms = rest.map(function (term) {
+        /* A short number is a unit, not a fragment: "3" should find Unit 003
+           and not 4735 22nd Ave NE. It matches a word, with any leading zeros.
+           Everything else stays a substring, so a name narrows as it is typed. */
+        if (/^[0-9]{1,3}$/.test(term)) {
+          var whole = new RegExp("(^| )0*" + term + "( |$)");
+          return function (hay) { return whole.test(hay); };
+        }
+        return function (hay) { return hay.indexOf(term) !== -1; };
+      });
       var shown = 0;
       rows.forEach(function (tr) {
-        var hit = !q || tr.dataset.search.indexOf(q) !== -1;
+        var hay = tr.dataset.search;
+        var hit = terms.every(function (matches) { return matches(hay); });
+        if (hit && unitWanted) {
+          var unit = (tr.dataset.unit || "").replace(/^0+(?=[0-9])/, "");
+          hit = unit === unitWanted;
+        }
         tr.hidden = !hit;
         // Filtering to a handful shows all of what they say — the match is
         // often in a line the clamp is sitting on. Clearing the box clamps
@@ -2345,6 +2381,95 @@ const UNREADABLE = `<p class="notice"><strong>The checklist database can't be re
     The inspections live in <code>${escapeHtml(CHECKLIST_DB)}</code>, written by the checklist app on
     :3100. Check that the file is there and that this app can read it.</p>`;
 
+/* ------------------------------------------------- who the office has on the lease */
+
+/**
+ * The tenant of record for a property, read from the Leases sheet.
+ *
+ * A checklist carries whoever signed it, which is one of the people who live
+ * there and often not the one the office thinks of. "4544 Kenneth" is how
+ * somebody looks for a unit — the building, and the person on the lease — and
+ * until this existed the search had never heard that name, because Kenneth
+ * didn't sign the walkthrough.
+ *
+ * So the names on the lease join the row's searchable text. They are not shown:
+ * what the report says is what the report says, and a name from another system
+ * has no business printing next to it.
+ */
+type LeaseIndex = { byUnit: Map<string, string[]>; byBuilding: Map<string, string[]> };
+
+/** Lower-cased, and punctuation reduced to spaces, so two spellings meet. */
+const flatten = (value: unknown) =>
+  String(value ?? "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
+
+/** The building, without the city, state, zip and country a form sometimes adds. */
+const buildingKey = (value: unknown) =>
+  flatten(value)
+    .replace(/\b(seattle|wa|washington|usa)\b/g, " ")
+    .replace(/\b\d{5}\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * "Unit 003", "U3", "no. 3" and "3" are the same unit; "Upper Unit" is "upper".
+ * The sheet and the checklist are typed by different people on different days,
+ * and neither is wrong.
+ */
+const unitKey = (value: unknown) => {
+  const bare = flatten(value)
+    .replace(/\b(unit|apt|apartment|number|no)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const digits = /^u?0*(\d+)$/.exec(bare.replace(/\s+/g, ""));
+  return digits ? digits[1] : bare;
+};
+
+/** The Leases sheet, indexed by building and by unit. Empty if it isn't there. */
+function leaseIndex(): LeaseIndex {
+  const byUnit = new Map<string, string[]>();
+  const byBuilding = new Map<string, string[]>();
+  try {
+    const sheet = db.query(`SELECT columns, rows FROM sheets WHERE id = 'leases'`).get() as
+      | { columns: string; rows: string }
+      | undefined;
+    if (!sheet) return { byUnit, byBuilding };
+    const columns = (JSON.parse(sheet.columns) as { name: string }[]).map((c) => c.name);
+    const rows = JSON.parse(sheet.rows) as string[][];
+    const address = columns.indexOf("Address");
+    const unit = columns.indexOf("Unit");
+    const tenant = columns.indexOf("Tenant");
+    const email = columns.indexOf("Email");
+    if (address === -1 || tenant === -1) return { byUnit, byBuilding };
+
+    for (const row of rows) {
+      const who = [row[tenant], email === -1 ? "" : row[email]].filter(Boolean).join(" ").trim();
+      if (!who) continue;
+      const building = buildingKey(row[address]);
+      if (!building) continue;
+      const key = `${building}|${unit === -1 ? "" : unitKey(row[unit])}`;
+      byUnit.set(key, [...(byUnit.get(key) ?? []), who]);
+      byBuilding.set(building, [...(byBuilding.get(building) ?? []), who]);
+    }
+  } catch (err) {
+    // A missing or unreadable sheet costs the search these names, nothing else.
+    console.warn("Could not read the Leases sheet for the inspection search.", err);
+  }
+  return { byUnit, byBuilding };
+}
+
+/**
+/** Who the lease says lives at the address a checklist was walked at. */
+function tenantsOfRecord(index: LeaseIndex, address: string): string[] {
+  const [first, ...rest] = String(address ?? "").split(",");
+  const building = buildingKey(first);
+  const exact = index.byUnit.get(`${building}|${unitKey(rest.join(" "))}`);
+  if (exact) return exact;
+  const whole = index.byBuilding.get(building) ?? [];
+  // A house or a two-flat: everyone on it lives at that address. A fifty-unit
+  // building is not, so an unrecognised unit gets nobody rather than everybody.
+  return whole.length <= 4 ? whole : [];
+}
+
 /**
  * One row. Everything that identifies the inspection is squeezed left so the
  * findings column can have the width: a reader is here to see what the
@@ -2354,7 +2479,8 @@ function listRow(
   i: Inspection,
   notes: number,
   signed: { count: number; who: string } | undefined,
-  awaiting: { sign: number; form: number } | undefined
+  awaiting: { sign: number; form: number } | undefined,
+  tenants: string[]
 ): string {
   const c = i.checklist;
   const t = tally(c);
@@ -2413,26 +2539,27 @@ function listRow(
       }`
     : `<span class="none">Nothing flagged, nothing written.</span>`;
 
-  // Everything the search box matches on, lower-cased once here rather than on
-  // every keystroke in the browser. The findings are in here too: "dishwasher"
-  // or "smoke detector" is how somebody looks for the report they half
-  // remember, and a clamped line is still the report's text.
-  const haystack = [
-    c.address,
-    c.name,
-    c.email,
-    c.agentName ?? "",
-    // Whoever put their name to it afterwards, so they can be searched for too.
-    signed?.who ?? "",
-    signedDate(i.createdAt),
-    ...found.map((d) => `${d.room} ${d.label} ${d.condition} ${d.notes}`),
-    ...wrote.map((w) => `${w.where} ${w.what}`),
-  ]
-    .join(" ")
-    .toLowerCase();
+  const haystack = flatten(
+    [
+      c.address,
+      // The unit on its own, so it is a term rather than a fragment of the
+      // address: "003" and "3" both find Unit 003.
+      unitKey(c.address.split(",").slice(1).join(" ")),
+      c.name,
+      c.email,
+      c.agentName ?? "",
+      // Whoever put their name to it afterwards, so they can be searched for too.
+      signed?.who ?? "",
+      ...tenants,
+      signedDate(i.createdAt),
+      ...found.map((d) => `${d.room} ${d.label} ${d.condition} ${d.notes}`),
+      ...wrote.map((w) => `${w.where} ${w.what}`),
+    ].join(" ")
+  );
 
   return `
-        <tr data-search="${escapeAttr(haystack)}" data-id="${escapeAttr(i.id)}">
+        <tr data-search="${escapeAttr(haystack)}" data-id="${escapeAttr(i.id)}"
+          data-unit="${escapeAttr(unitKey(c.address.split(",").slice(1).join(" ")))}">
           <td class="when" data-label="Signed">${escapeHtml(signedDate(i.createdAt))}
             <span class="time">${escapeHtml(signedTime(i.createdAt))}</span></td>
           <td class="address" data-label="Property"><a href="/inspections/${escapeAttr(i.id)}">${escapeHtml(c.address)}</a>
@@ -2469,15 +2596,18 @@ export function renderInspectionsList(nav: string, navCss: string): string {
   const counts = noteCounts();
   const signed = signatureSummary();
   const awaiting = outstandingLinks();
+  const leases = leaseIndex();
   const body = `  <h1>Inspections</h1>
   <p class="lede">Every signed move-in condition report, newest first &mdash;
     ${inspections.length} in all${withPoor ? `, ${withPoor} with something marked poor` : ""}.
     What each walkthrough found is in the row itself; open a report to read it room by room,
-    or take the PDF the tenant signed.</p>
+    or take the PDF the tenant signed. The filter takes several words at once and matches all of
+    them &mdash; <em>4544 unit 3</em>, or a building and the name of whoever is on the lease there,
+    whether or not they were the one who signed.</p>
 
   <div class="toolbar">
     <input type="search" id="inspection-search"
-      placeholder="Filter by property, tenant, agent, date &mdash; or anything written in a note"
+      placeholder="Filter by property, unit, tenant, agent, date &mdash; or anything written in a note"
       autocomplete="off" aria-label="Filter inspections" />
     <button type="button" id="expand-all" data-act="open">Show all findings</button>
     <span class="count" id="shown-count">${inspections.length} ${
@@ -2497,7 +2627,15 @@ export function renderInspectionsList(nav: string, navCss: string): string {
         ${
           inspections.length
             ? inspections
-                .map((i) => listRow(i, counts.get(i.id) ?? 0, signed.get(i.id), awaiting.get(i.id)))
+                .map((i) =>
+                  listRow(
+                    i,
+                    counts.get(i.id) ?? 0,
+                    signed.get(i.id),
+                    awaiting.get(i.id),
+                    tenantsOfRecord(leases, i.checklist.address)
+                  )
+                )
                 .join("") +
               `\n        <tr class="empty no-match" hidden><td colspan="6">No inspection matches that.</td></tr>`
             : `<tr class="empty"><td colspan="6">No inspections have been signed yet.</td></tr>`
