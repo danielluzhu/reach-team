@@ -486,6 +486,12 @@ export type LaterSignature = {
   name: string;
   role: string;
   remark: string;
+  /**
+   * What they had to say room by room. One remark is rarely the shape of it:
+   * somebody signing a report has a thing to say about the back bedroom and
+   * nothing at all about the kitchen.
+   */
+  roomNotes: { room: string; note: string }[];
   /** The PNG the canvas produced, as a data URL. */
   signature: string;
   signedAt: string;
@@ -498,6 +504,8 @@ export type LaterSignature = {
 
 /** Room for what somebody signing a week later wants to put on the record. */
 export const REMARK_MAX = 2000;
+/** And per room, where what they have to say is about one room and not the lot. */
+export const ROOM_NOTE_MAX = 600;
 const SIGNER_MAX = 120;
 const ROLE_MAX = 80;
 /** A canvas signature is a few KB. This is slack, not a target. */
@@ -517,12 +525,15 @@ export const SIGNER_ROLES = [
 
 const insertSignature = db.query(
   `INSERT INTO inspection_signatures
-     (checklist_id, signer_name, role, remark, signature, signed_at, added_by, added_by_name, link_id)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-   RETURNING id, signer_name, role, remark, signature, signed_at, added_by, added_by_name, link_id`
+     (checklist_id, signer_name, role, remark, signature, signed_at, added_by, added_by_name,
+      link_id, room_notes)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   RETURNING id, signer_name, role, remark, signature, signed_at, added_by, added_by_name,
+             link_id, room_notes`
 );
 const listSignatures = db.query(
-  `SELECT id, signer_name, role, remark, signature, signed_at, added_by, added_by_name, link_id
+  `SELECT id, signer_name, role, remark, signature, signed_at, added_by, added_by_name,
+          link_id, room_notes
    FROM inspection_signatures WHERE checklist_id = ? AND deleted_at IS NULL ORDER BY id`
 );
 // Names as well as counts: "who signed this afterwards" is a thing somebody
@@ -541,7 +552,23 @@ const softDeleteSignature = db.query(
 type SignatureRow = {
   id: number; signer_name: string; role: string; remark: string; signature: string;
   signed_at: string; added_by: string; added_by_name: string | null; link_id: number | null;
+  room_notes: string | null;
 };
+
+/** Stored as JSON; a row written before the column existed simply has none. */
+function readRoomNotes(stored: string | null): { room: string; note: string }[] {
+  if (!stored) return [];
+  try {
+    const parsed = JSON.parse(stored);
+    return Array.isArray(parsed)
+      ? parsed
+          .map((n: any) => ({ room: String(n?.room ?? ""), note: String(n?.note ?? "") }))
+          .filter((n) => n.room && n.note)
+      : [];
+  } catch {
+    return [];
+  }
+}
 
 const toSignature = (r: SignatureRow): LaterSignature => ({
   id: r.id,
@@ -553,6 +580,7 @@ const toSignature = (r: SignatureRow): LaterSignature => ({
   addedBy: r.added_by,
   addedByName: r.added_by_name,
   linkId: r.link_id,
+  roomNotes: readRoomNotes(r.room_notes),
 });
 
 export function inspectionSignatures(checklistId: string): LaterSignature[] {
@@ -622,6 +650,7 @@ export function addInspectionSignature(
     new Date().toISOString(),
     user.username,
     displayName(user),
+    null,
     null
   ) as SignatureRow;
   console.log(
@@ -996,6 +1025,26 @@ export function signByLink(
   if (remark.length > REMARK_MAX) {
     return { error: `A remark can be at most ${REMARK_MAX} characters.`, status: 400 };
   }
+
+  // What they wrote against a room. Only rooms this checklist actually has —
+  // a note filed against a room nobody walked would sit in the record saying
+  // nothing about anything.
+  const rooms = new Map(
+    (inspection.checklist.rooms ?? []).map((room) => [room.name.trim().toLowerCase(), room.name])
+  );
+  const roomNotes: { room: string; note: string }[] = [];
+  if (input?.roomNotes !== undefined) {
+    if (!Array.isArray(input.roomNotes)) return { error: "Those room notes weren't readable.", status: 400 };
+    for (const entry of input.roomNotes.slice(0, rooms.size)) {
+      const room = rooms.get(String((entry as any)?.room ?? "").trim().toLowerCase());
+      const note = String((entry as any)?.note ?? "").trim();
+      if (!room || !note) continue;
+      if (note.length > ROOM_NOTE_MAX) {
+        return { error: `A note about one room can be at most ${ROOM_NOTE_MAX} characters.`, status: 400 };
+      }
+      roomNotes.push({ room, note });
+    }
+  }
   if (!isSignature(signature)) return { error: "Sign in the box before saving.", status: 400 };
   if (signature.length > SIGNATURE_MAX) return { error: "That signature is too large to store.", status: 413 };
 
@@ -1008,12 +1057,14 @@ export function signByLink(
 
   const row = insertSignature.get(
     inspection.id, name, link.role, remark, signature, now,
-    link.createdBy, link.createdByName, link.id
+    link.createdBy, link.createdByName, link.id,
+    roomNotes.length ? JSON.stringify(roomNotes) : null
   ) as SignatureRow;
   attachSignature.run(row.id, link.id);
   console.log(
     `[${now}] inspection ${inspection.id.slice(0, 8)} signed remotely by ${name} (${link.role}) ` +
-      `through link ${link.id}, sent by ${link.createdBy} (signature ${row.id})`
+      `through link ${link.id}, sent by ${link.createdBy} (signature ${row.id}` +
+      `${roomNotes.length ? `, ${roomNotes.length} room note${roomNotes.length === 1 ? "" : "s"}` : ""})`
   );
   return { signature: toSignature(row) };
 }
@@ -1460,6 +1511,11 @@ const DETAIL_CSS = `
     .later-sig .at { display: flex; align-items: baseline; gap: 0.5rem; margin: 0.15rem 0 0;
       color: var(--muted); font-size: 0.78rem; }
     .later-sig .body { margin: 0.4rem 0 0; white-space: pre-wrap; font-size: 0.9rem; color: #374151; }
+    /* What they said about one room rather than about the report. */
+    .later-sig .rooms { margin: 0.45rem 0 0; padding: 0; list-style: none; }
+    .later-sig .rooms li { padding: 0.2rem 0 0.2rem 0.6rem; border-left: 2px solid #ddd6fe;
+      font-size: 0.88rem; color: #374151; }
+    .later-sig .rooms .where { display: block; font-weight: 600; font-size: 0.78rem; color: #4c1d95; }
     .later-sig .drop { margin-left: auto; background: none; border: 0; padding: 0; cursor: pointer;
       color: var(--muted); font: inherit; font-size: 0.78rem; text-decoration: underline; }
     .later-sig .drop:hover { color: #991b1b; }
@@ -1727,6 +1783,16 @@ export function renderLaterSignature(sig: LaterSignature, user: User): string {
               : `captured by ${escapeHtml(sig.addedByName || sig.addedBy)}`
           }${mine ? `<button type="button" class="drop" data-act="delete-signature">Remove</button>` : ""}</p>
           ${sig.remark ? `<p class="body">${escapeHtml(sig.remark)}</p>` : ""}
+          ${
+            sig.roomNotes.length
+              ? `<ul class="rooms">${sig.roomNotes
+                  .map(
+                    (n) =>
+                      `<li><span class="where">${escapeHtml(n.room)}</span>${escapeHtml(n.note)}</li>`
+                  )
+                  .join("")}</ul>`
+              : ""
+          }
         </div>
       </article>`;
 }
@@ -3049,10 +3115,22 @@ const SIGN_CSS = `
       border-radius: 10px; color: #991b1b; font-size: 0.85rem; }
     .note { margin: 0 0 14px; padding: 12px 14px; background: #eef2fb; border: 1px solid #c9d7f5;
       border-radius: 12px; font-size: 0.86rem; color: #22386f; }
+    /* One box per room. Quiet until it is written in: most rooms have nothing
+       to add, and a page of empty boxes shouldn't read as a page of questions. */
+    .room { padding: 10px 0; border-top: 1px solid #f1f2f4; }
+    .room:first-child { border-top: 0; padding-top: 0; }
+    .room label { margin: 0; font-size: 0.9rem; text-transform: none; letter-spacing: 0;
+      color: var(--ink); font-weight: 600; }
+    .room .was { margin: 2px 0 6px; color: var(--muted); font-size: 0.78rem; }
+    .room textarea { min-height: 0; padding: 8px 10px; font-size: 0.92rem; }
     .done { text-align: center; padding: 26px 16px; }
     .done .tick { width: 54px; height: 54px; margin: 0 auto 12px; border-radius: 50%; background: #e3f6e5;
       color: #1e7d32; font-size: 1.7rem; line-height: 54px; }
     footer.legal { color: var(--muted); font-size: 0.76rem; text-align: center; margin-top: 8px; }`;
+
+/** An id for a label to point at, made from a room name. */
+const slug = (name: string) =>
+  String(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "room";
 
 /** A standalone page: no nav, no sign-in, nothing about anything else. */
 function signPage(title: string, body: string): string {
@@ -3175,6 +3253,34 @@ export function renderSignPage(link: SignLink, inspection: Inspection): string {
           )}</p></div>`
         : ""
     }
+
+    <div class="card">
+      <h2>Room by room</h2>
+      <p class="sub">If something in a particular room isn&rsquo;t as this says, put it here rather
+        than not signing. What you write is kept with your signature, against the room it is about.</p>
+      <div class="rooms">
+        ${(c.rooms ?? [])
+          .map((room) => {
+            const flagged = (room.items ?? []).filter(
+              (item) => item.condition === "Poor" || item.condition === "Fair"
+            );
+            return `<div class="room">
+          <label for="room-${escapeAttr(slug(room.name))}">${escapeHtml(room.name)}</label>
+          <p class="was">${
+            flagged.length
+              ? flagged
+                  .map((item) => `${escapeHtml(item.label)} &mdash; ${escapeHtml(item.condition.toLowerCase())}`)
+                  .join(" &middot; ")
+              : "nothing was flagged in here"
+          }</p>
+          <textarea id="room-${escapeAttr(slug(room.name))}" data-room="${escapeAttr(room.name)}"
+            maxlength="${ROOM_NOTE_MAX}" rows="2"
+            placeholder="Anything to add about ${escapeAttr(room.name.toLowerCase())}&hellip;"></textarea>
+        </div>`;
+          })
+          .join("")}
+      </div>
+    </div>
 
     <div class="card" id="sign-card">
       <h2>Your signature</h2>
@@ -3305,6 +3411,12 @@ const SIGN_JS = `
       body: JSON.stringify({
         name: name,
         remark: document.getElementById("s-remark").value.trim(),
+        // Only the rooms actually written in; the rest were left alone on
+        // purpose and an empty note is not a comment.
+        roomNotes: Array.prototype.map.call(
+          document.querySelectorAll("[data-room]"),
+          function (box) { return { room: box.dataset.room, note: box.value.trim() }; }
+        ).filter(function (n) { return n.note; }),
         signature: canvas.toDataURL("image/png")
       })
     })

@@ -44,6 +44,8 @@ export type AddendumSignature = {
   remark: string;
   /** A PNG data URL. */
   signature: string;
+  /** What they said about particular rooms, where the remark wasn't the shape of it. */
+  roomNotes?: { room: string; note: string }[];
   signedAt: string;
   addedBy: string;
   addedByName: string | null;
@@ -284,6 +286,22 @@ export async function appendAddendum(
         ensure(13);
         draw(line, MARGIN + 12, 10, regular);
         y -= 13;
+      }
+
+      // What they said about one room, under the room's name. A page of "the
+      // back bedroom is worse than this says" filed as one paragraph is a
+      // paragraph nobody can act on room by room.
+      for (const note of sig.roomNotes ?? []) {
+        const lines = wrapBody(note.note, regular, 9.5, CONTENT_W - 34);
+        ensure(12 + Math.min(lines.length, 2) * 12);
+        draw(note.room, MARGIN + 22, 9, bold, MUTED);
+        y -= 12;
+        for (const line of lines) {
+          ensure(12);
+          draw(line, MARGIN + 34, 9.5, regular);
+          y -= 12;
+        }
+        y -= 2;
       }
       y -= 10;
     }

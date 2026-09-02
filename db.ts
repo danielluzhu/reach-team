@@ -221,12 +221,20 @@ for (const [column, definition] of [
   }
 }
 
-// Added when signing moved off this machine; existing databases pick it up here.
-if (
-  !(db.query(`PRAGMA table_info(inspection_signatures)`).all() as { name: string }[])
-    .some((c) => c.name === "link_id")
-) {
-  db.run(`ALTER TABLE inspection_signatures ADD COLUMN link_id INTEGER`);
+/**
+ * Added as signing moved off this machine, and again when the person signing
+ * turned out to have something to say about the back bedroom rather than about
+ * the report as a whole. `room_notes` is a JSON array of `{room, note}` — one
+ * remark is rarely the shape of what somebody wants to put on a record.
+ */
+for (const [column, definition] of [
+  ["link_id", "INTEGER"],
+  ["room_notes", "TEXT"],
+] as const) {
+  const columns = db.query(`PRAGMA table_info(inspection_signatures)`).all() as { name: string }[];
+  if (!columns.some((c) => c.name === column)) {
+    db.run(`ALTER TABLE inspection_signatures ADD COLUMN ${column} ${definition}`);
+  }
 }
 
 /** How many past states of each sheet to keep. Roughly a day of active use. */

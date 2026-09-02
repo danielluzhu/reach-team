@@ -1194,8 +1194,20 @@ its note, the general notes, and the signed PDF one tap away. That PDF is served
 since is its own business, and the document they are being asked to endorse is
 the one from the day.
 
-Then a name (theirs to correct — the office types other people's names wrong), an
-optional remark, and a signature pad. What comes back is an ordinary later
+Then a name (theirs to correct — the office types other people's names wrong), a
+box **for every room**, an optional remark about the report as a whole, and a
+signature pad.
+
+The room boxes are the point of the page as much as the signature is. One
+remark is rarely the shape of what somebody has to say: they agree with the
+report except for the back bedroom, and a paragraph at the bottom saying so is a
+paragraph nobody can act on room by room. Each box carries what that room was
+marked as, so it is answerable rather than an empty prompt — *Smoke detector —
+poor*, and underneath it, *"still has no battery"*. Only the rooms actually
+written in are kept, they are checked against the rooms this checklist really
+has, and they print in the addendum under the signature, each under its room's
+name. The wording says the thing worth saying out loud: if something is wrong,
+put it here rather than not signing. What comes back is an ordinary later
 signature, with one difference: the report, the page and the addendum all say
 *signed remotely, on a link sent by <whoever sent it>*, because a mark made at
 somebody's kitchen table is a different act from one taken on the office laptop.
