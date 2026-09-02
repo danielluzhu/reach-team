@@ -34,7 +34,11 @@ authentication** — see "Before this goes anywhere public".
 2. **Checklist** — one collapsible card per room, each opening with a one-line
    **room note**: which bedroom this is, where the bathroom is off. "Bedroom 2"
    tells a reader nothing six months later; "small back bedroom off the
-   hallway" does. The prompt suits the room kind, it's styled quietly so it
+   hallway" does. On a link sent to a tenant (`/form/<token>`) that box asks
+   for something else — *anything you want to add about this room* — because
+   the office identified the rooms last time round and they came over with the
+   copy; what is wanted from the tenant is what **they** have to say about the
+   room, and it is added to what is already there rather than replacing it. The prompt suits the room kind, it's styled quietly so it
    doesn't read as another thing to fill in, and it prints under the room's
    heading in the PDF. Then each item is rated
    Excellent / Good / Fair / Poor / N/A with optional notes. Rooms can be

@@ -1033,6 +1033,11 @@ function buildRooms() {
 
 /** A prompt that suits the room, since "note" on its own invites nothing. */
 function roomNoteHint(room) {
+  // On a link sent to a tenant, the rooms were identified by the office last
+  // time round and came over with the copy. What is wanted here is what *they*
+  // have to say about the room, so the box asks for that instead of asking
+  // again which bedroom this is.
+  if (BASE.indexOf("/form/") === 0) return "Anything you want to add about this room";
   if (room.kind === "bedroom") return "Which bedroom? e.g. small one facing the street";
   if (room.kind === "bathroom") return "Which bathroom? e.g. en-suite off Bedroom 1";
   if (room.kind === "furnishings") return "Anything about the furniture as a whole";
