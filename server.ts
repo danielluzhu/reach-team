@@ -2174,7 +2174,7 @@ const server = Bun.serve({
         return Response.json(loadSheets(), { headers: { "Cache-Control": "no-store, private" } });
       }
       if (req.method === "PUT") {
-        const body = (await req.json()) as { sheets?: any[] };
+        const body = (await req.json()) as { sheets?: any[]; noCalendar?: boolean };
         if (!Array.isArray(body?.sheets) || !body.sheets.every(validSheet)) {
           return Response.json(
             { error: "expected { sheets: [{id, name, columns, rows, rev}] }" },
@@ -2209,7 +2209,20 @@ const server = Bun.serve({
         // Only after the save has committed: a tour that is safely on the
         // sheet but missing a calendar invite is a nuisance, a save refused
         // because Google was down would be a lost tour.
-        queueTourEvents(body.sheets, toursBefore, user.username);
+        //
+        // A bulk import says so, and skips it: a spreadsheet of last season's
+        // tours is history, and booking an invitation for each of them would
+        // send the whole office a diary full of appointments that are over.
+        // Said out loud in the log, because a tour that quietly never reached
+        // the calendar is the other way this goes wrong.
+        if (body.noCalendar) {
+          console.log(
+            `[${new Date().toISOString()}] sheets saved by ${user.username} with the calendar ` +
+              `skipped (bulk import); nothing queued for these rows`
+          );
+        } else {
+          queueTourEvents(body.sheets, toursBefore, user.username);
+        }
         return Response.json({ ok: true, savedAt: new Date().toISOString(), revs: result.revs });
       }
       return new Response("Method not allowed", { status: 405 });

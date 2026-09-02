@@ -346,8 +346,8 @@ the "signed in as … / Sign out" control the other pages already had.
 
 It supports cell editing,
 keyboard navigation, multi-cell selection, copy/paste, undo/redo, sort, search, column
-resize/rename/reorder, row and column insert/delete, and CSV export. Edits autosave to
-SQLite about 0.7s after you stop typing.
+resize/rename/reorder, row and column insert/delete, bulk import, and CSV export. Edits
+autosave to SQLite about 0.7s after you stop typing.
 
 Columns:
 
@@ -358,6 +358,46 @@ Columns:
   right-click a header for "Move column left/right". Every row's cell travels
   with its column, and the move is undoable like any other edit.
 - **Rename** — double-click a header, or right-click it.
+
+### Importing a block of rows
+
+A season of applications, or a landlord's spreadsheet of leases, arrives as a
+file — and typing it in by hand is how it ends up not being typed in at all.
+**Import rows…** in the toolbar takes a block pasted straight out of Excel,
+Google Sheets or Numbers, or a **CSV/TSV file**. (An `.xlsx` is a zip full of
+XML; the dialog says to save it as CSV rather than failing at it.)
+
+`Ctrl+V` already dropped a block into the grid, but *positionally*: it assumed
+the incoming columns were in this sheet's order and wrote into whatever was
+under the cursor when they weren't. The import works the other way round:
+
+- The delimiter is sniffed — tabs or commas, whichever the first full line has
+  more of — and quoted cells keep their commas and newlines, so
+  `"Hopper, Grace"` stays one name.
+- The **first row is treated as headings** when enough of it names a column
+  here, and the columns are matched by name, not by position. Near misses are
+  matched too — *Phone Number* to **Number**, *Tenant Name* to **Tenant** —
+  and every match is **shown for correction** before anything moves, next to
+  two real values from the file so it is obvious when a column is going to the
+  wrong place. Anything with no home is set to *skip*; the summary names the
+  sheet columns that will be left empty.
+- With no headings, columns land in order, which is what a paste does anyway.
+- Date columns are parsed on the way in, so `9/15/2026` is stored the way the
+  sheet stores dates, exactly as a typed value would be.
+- **Rows already on the sheet are skipped** by default, compared whole after
+  mapping, and the count is reported: re-importing the same export twice adds
+  nothing.
+- Nothing is written until the button is pressed, the whole import is **one
+  undo step**, and the grid jumps to the first new row so it can be looked at
+  rather than taken on trust.
+
+**Importing into Tours & Prospects does not book calendar events** unless the
+tick in the dialog says so. Every new row on that sheet with a name, a place and
+a date is otherwise queued for an invitation (see *Tour calendar events*), and a
+spreadsheet of last season's tours would send the whole office a diary full of
+appointments that are already over. The save carries `noCalendar` for that one
+write, and the server logs that it skipped it — a tour that quietly never
+reached the calendar is the other way this goes wrong.
 
 ### How tall a cell is
 
