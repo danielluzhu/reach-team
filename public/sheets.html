@@ -499,10 +499,85 @@ function parseTimeInput(value) {
   return hour * 60 + min;
 }
 
-/** What a typed or pasted value is stored as. Only date columns change. */
+/**
+ * The earliest hour a tour is booked at, and the whole of the assumption below:
+ * nobody is shown a room before nine in the morning or after nine at night.
+ */
+const FIRST_TOUR_HOUR = 9;
+
+/**
+ * A time typed with no AM or PM, as minutes past midnight.
+ *
+ * Tours run inside one twelve-hour window, so a bare hour has exactly one
+ * sensible reading and it is worth taking: 9, 10 and 11 are morning, 12 is
+ * noon, and 1 through 8 are the afternoon and the evening. "2" is a two
+ * o'clock tour, which is a real thing, rather than 2am, which is not.
+ *
+ * An hour past 12 is already unambiguous and is read as written, so 14:30 and
+ * 19:00 keep meaning what they say.
+ */
+function assumeMeridiem(hour, min) {
+  const afternoon = hour >= 1 && hour < FIRST_TOUR_HOUR;
+  return (afternoon ? hour + 12 : hour) * 60 + min;
+}
+
+/* A whole cell that is nothing but a time. Deliberately not parseTimeInput's
+   pattern: that one reads a booked time back out of whatever a person left in
+   the cell ("12:50PM (1:10PM actual)") for sorting, and must not rewrite it.
+   This one only fires when the cell holds a time and nothing else, which is
+   what makes rewriting it safe. */
+const CLOCK = /^(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?$/i;
+
+/** Minutes past midnight as the column has always been written: "2:00 PM". */
+function clockText(mins) {
+  const hour = Math.floor(mins / 60);
+  const half = hour < 12 ? "AM" : "PM";
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${String(mins % 60).padStart(2, "0")} ${half}`;
+}
+
+/**
+ * A time typed into the grid, finished off: "2" and "2:00" and "2pm" are all
+ * stored as "2:00 PM".
+ *
+ * Two things are being fixed at once. The column is sorted and booked on what
+ * it holds, and a bare "2" was neither a time to parseTimeInput nor a time to
+ * the calendar — the tour simply had no hour. And the sheet had accumulated
+ * every shape of the same instant, so the same 2pm read as four different
+ * values down the column.
+ *
+ * Anything that isn't purely a time — a blank, "TBD", a moved tour written
+ * "12:50PM (1:10PM actual)" — is left exactly as typed. Those carry more than
+ * a time, and losing the rest of what somebody wrote to tidy the format would
+ * be the worse trade.
+ */
+function normalizeTime(value) {
+  const text = String(value ?? "").trim().replace(/(\d)\.(\d)/g, "$1:$2");
+  const m = CLOCK.exec(text);
+  if (!m) return value;
+  const hour = Number(m[1]);
+  const min = Number(m[2] ?? 0);
+  const half = m[3] ? m[3].toLowerCase() : null;
+  if (min > 59) return value;
+  if (half) {
+    if (hour < 1 || hour > 12) return value;
+    return clockText(((half === "p" ? (hour % 12) + 12 : hour % 12)) * 60 + min);
+  }
+  if (hour > 23) return value;
+  return clockText(assumeMeridiem(hour, min));
+}
+
+/**
+ * What a typed or pasted value is stored as.
+ *
+ * Date and time columns are the two that hold a value in a shape of their own
+ * — ISO for a date, "2:00 PM" for a time — rather than the text somebody
+ * happened to type. Everything else is kept verbatim.
+ */
 function normalizeValue(value, col) {
-  if (!col || col.type !== "date") return value;
-  return parseDateInput(value, col) ?? value;
+  if (!col) return value;
+  if (col.type === "date") return parseDateInput(value, col) ?? value;
+  if (col.type === "time") return normalizeTime(value);
+  return value;
 }
 
 function displayValue(value, col) {
