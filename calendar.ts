@@ -362,10 +362,31 @@ function guideNames(raw: string): string[] {
 }
 
 /**
- * The sheet has no column for it — a virtual tour is only ever mentioned in
- * the notes, so that is where it has to be read from.
+ * How a tour says it is virtual.
+ *
+ * The Virtual? column is the place to say so, and a yes there is enough. It
+ * was added late, though, and years of tours say it in the notes instead —
+ * those still count, both so the history reads correctly and because somebody
+ * typing "zoom tour" in the notes plainly means it.
  */
 const VIRTUAL = /\b(virtual|zoom|facetime|video tour)\b/i;
+const YES = /^(y|yes|true|1|x|✓|✔)$/i;
+
+function isVirtual(flag: string, notes: string): boolean {
+  return YES.test(flag.trim()) || VIRTUAL.test(flag) || VIRTUAL.test(notes);
+}
+
+/**
+ * The prospect's own address, or "" if the cell holds something that isn't one.
+ *
+ * Only ever one address: it is the person being toured, not a distribution
+ * list, and anything else in there — "no email", two addresses, a note — is
+ * left for a human rather than half-read into an invitation.
+ */
+function prospectEmail(raw: string): string {
+  const text = raw.trim();
+  return /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(text) ? text : "";
+}
 
 /**
  * Everything written into a description is escaped, because the description is
@@ -494,7 +515,8 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
 
   const street = streetOf(location);
   const notes = cell(row, idx, "Personal Opinion");
-  const virtual = VIRTUAL.test(notes);
+  const virtual = isVirtual(cell(row, idx, "Virtual?"), notes);
+  const email = prospectEmail(cell(row, idx, "Email"));
   // Nobody named on an unscheduled row means it is going to both leads, which
   // is the point of it. A name typed there takes it, and the event narrows to
   // them on the next save.
@@ -524,6 +546,7 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
 
   const phone = cell(row, idx, "Phone");
   const lines = [`Prospect: ${esc(name)}`, ...contactLines(phone)];
+  if (email) lines.push(`Email: <a href="mailto:${esc(email)}">${esc(email)}</a>`);
   const add = (label: string, value: string) => {
     if (value && !["x", "nil"].includes(value.toLowerCase())) {
       lines.push(`${label}: ${esc(value)}`);
