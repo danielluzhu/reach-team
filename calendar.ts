@@ -324,10 +324,25 @@ export function streetLabel(street: string): string {
 }
 
 /**
- * "2:30PM", "7.00pm", "12:50PM (1:10PM actual)" → 24h "14:30", plus whatever
- * was in the parentheses. The sheet uses the bracket to record that a tour
- * moved; the booked time is the one outside it, and the note is carried into
- * the description rather than thrown away.
+ * The earliest hour a tour is booked at. Tours run between nine in the morning
+ * and nine at night, which is what makes a time with no AM or PM readable at
+ * all: 9, 10 and 11 are morning, 12 is noon, and 1 through 8 are the afternoon
+ * and the evening. The same constant, for the same reason, is in sheets.html —
+ * that one completes the cell as it is typed, this one reads the years of
+ * cells typed before it existed.
+ */
+export const FIRST_TOUR_HOUR = 9;
+
+/**
+ * "2:30PM", "7.00pm", "11", "12:50PM (1:10PM actual)" → 24h "14:30", plus
+ * whatever was in the parentheses. The sheet uses the bracket to record that a
+ * tour moved; the booked time is the one outside it, and the note is carried
+ * into the description rather than thrown away.
+ *
+ * AM or PM is not required. Without it the hour is read as the tour it could
+ * be — see FIRST_TOUR_HOUR — because the alternative is what used to happen:
+ * a tour written "11" had no time the calendar could use, and was booked as an
+ * all-day event on a day somebody was expecting it at eleven.
  */
 export function parseTime(raw: string): { hhmm: string | null; note: string } {
   let t = raw.trim();
@@ -338,14 +353,22 @@ export function parseTime(raw: string): { hhmm: string | null; note: string } {
     note = paren[2]!.trim();
   }
   t = t.replace(/\./g, ":").trim();
-  const m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i);
+  const m = t.match(/^(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?$/i);
   if (!m) return { hhmm: null, note };
   let h = Number(m[1]);
   const min = Number(m[2] ?? 0);
-  const ap = m[3]!.toLowerCase();
-  if (h > 12 || min > 59) return { hhmm: null, note };
-  if (ap === "p" && h !== 12) h += 12;
-  if (ap === "a" && h === 12) h = 0;
+  const ap = m[3] ? m[3].toLowerCase() : null;
+  if (min > 59) return { hhmm: null, note };
+  if (ap) {
+    if (h > 12) return { hhmm: null, note };
+    if (ap === "p" && h !== 12) h += 12;
+    if (ap === "a" && h === 12) h = 0;
+  } else {
+    // An hour past 12 was written in 24-hour time and already says what it
+    // means; anything else is the window above.
+    if (h > 23) return { hhmm: null, note };
+    if (h >= 1 && h < FIRST_TOUR_HOUR) h += 12;
+  }
   return { hhmm: `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`, note };
 }
 
