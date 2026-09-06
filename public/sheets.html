@@ -421,13 +421,32 @@ function shortDate(text, col) {
  * so two-part-then-year is always read US-style, month first — which is how
  * this sheet's dates are written and what its `MM.DD.YY` display shows back.
  * A four-digit leading number is year-first instead, the one unambiguous case.
- * Anything else — "TBD", "next week", a half-typed date — is left exactly as
- * typed rather than guessed at.
+ * A year left off — `9.6` — is filled in where the column allows it; see
+ * fillsYear. Anything else — "TBD", "next week", a half-typed date — is left
+ * exactly as typed rather than guessed at.
  */
 const YMD = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/;
-const MDY = /^(\d{1,2})[-./](\d{1,2})[-./](\d{2,4})$/;
+const MDY = /^(\d{1,2})[-./](\d{1,2})(?:[-./](\d{2,4}))?$/;
 
-function parseDateInput(value) {
+/**
+ * Whether a date column may have its year filled in for it.
+ *
+ * On a sheet of tours the year is the one part of the date never in doubt, and
+ * typing it on every row is three keystrokes spent saying "still this year" —
+ * so `9.6` is the 6th of September this year. The two ends of a lease term are
+ * routinely in different years, though, which makes a missing year there a
+ * real question rather than a formality: those are left as typed for whoever
+ * knows the answer to finish.
+ *
+ * A year filled in this way is never silent — the cell redraws as `09.06.26`
+ * the moment it is typed, so a guess that isn't what was meant is visible on
+ * the spot rather than found in December.
+ */
+function fillsYear(col) {
+  return Boolean(col && col.type === "date" && !col.range);
+}
+
+function parseDateInput(value, col) {
   const text = String(value ?? "").trim();
   let year, month, day;
   const ymd = YMD.exec(text);
@@ -436,6 +455,10 @@ function parseDateInput(value) {
     const mdy = MDY.exec(text);
     if (!mdy) return null;
     [, month, day, year] = mdy;
+    if (year === undefined) {
+      if (!fillsYear(col)) return null;
+      year = todayISO().slice(0, 4);
+    }
     if (year.length === 3) return null;                 // 026: a typo, not a year
     if (year.length === 2) year = String(2000 + Number(year));
   }
@@ -479,7 +502,7 @@ function parseTimeInput(value) {
 /** What a typed or pasted value is stored as. Only date columns change. */
 function normalizeValue(value, col) {
   if (!col || col.type !== "date") return value;
-  return parseDateInput(value) ?? value;
+  return parseDateInput(value, col) ?? value;
 }
 
 function displayValue(value, col) {
@@ -1236,7 +1259,7 @@ function sortBy(c, dir) {
   // A time sorts on the clock, not the text: "9:00AM" after "10:00AM" is what
   // a plain string comparison gives, and it is wrong every morning.
   const key = (v) => {
-    if (col && col.type === "date") return parseDateInput(v) ?? v;
+    if (col && col.type === "date") return parseDateInput(v, col) ?? v;
     if (col && col.type === "time") {
       const mins = parseTimeInput(v);
       return mins === null ? v : mins;
