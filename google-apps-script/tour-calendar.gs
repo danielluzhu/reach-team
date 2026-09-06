@@ -12,13 +12,17 @@
  *     "Tour calendar".
  *  2. Replace SECRET below with a long random string. Generate one with:
  *       openssl rand -hex 32
- *  3. Deploy → New deployment → type "Web app".
+ *  3. Services (+) in the left-hand bar → Google Calendar API, identifier
+ *     "Calendar". A Google Meet link is a conference, and conferences exist
+ *     only in the Calendar API — CalendarApp on its own cannot make one, so
+ *     without this step virtual tours are booked with no way to join them.
+ *  4. Deploy → New deployment → type "Web app".
  *       Execute as:      Me (the account whose calendar this is)
  *       Who has access:  Anyone
  *     "Anyone" is what lets the CRM reach it without a Google login; SECRET is
  *     what stops anyone else who finds the URL from booking on your calendar.
- *  4. Authorise it when prompted, and copy the /exec URL.
- *  5. On the CRM box, put both values in the service environment:
+ *  5. Authorise it when prompted, and copy the /exec URL.
+ *  6. On the CRM box, put both values in the service environment:
  *       CALENDAR_WEBHOOK_URL=https://script.google.com/macros/s/…/exec
  *       CALENDAR_WEBHOOK_SECRET=<the same string as SECRET>
  *
@@ -174,16 +178,16 @@ function doPost(e) {
       }
       if (existing) {
         updateEvent(existing, ev, tz);
-        return reply({ ok: true, id: existing.getId(), updated: true });
+        return reply(withMeet(cal, ev, existing, { ok: true, id: existing.getId(), updated: true }));
       }
       // Somebody deleted it off the calendar. Book it again rather than
       // failing forever on an id that will never come back.
       var replacement = createEvent(cal, ev, tz);
-      return reply({ ok: true, id: replacement.getId(), recreated: true });
+      return reply(withMeet(cal, ev, replacement, { ok: true, id: replacement.getId(), recreated: true }));
     }
 
     var event = createEvent(cal, ev, tz);
-    return reply({ ok: true, id: event.getId() });
+    return reply(withMeet(cal, ev, event, { ok: true, id: event.getId() }));
   } catch (err) {
     return reply({ error: String(err && err.message ? err.message : err) });
   }
@@ -207,6 +211,61 @@ function createEvent(cal, ev, tz) {
   // sheet — the CRM reads these changes back.
   event.setGuestsCanModify(true);
   return event;
+}
+
+/**
+ * A virtual tour needs somewhere to happen, and for a video tour that is a
+ * Google Meet link on the invitation the prospect already has.
+ *
+ * The reply carries the link, or the reason there isn't one — a missing
+ * Calendar service is the likely one, and it is a mistake in the deployment
+ * rather than in the tour. Either way the event itself is booked and correct,
+ * so this never turns a working booking into a failed one; the CRM logs what
+ * came back.
+ */
+function withMeet(cal, ev, event, out) {
+  if (!ev.virtual) return out;
+  try {
+    out.meet = ensureMeet(cal, event);
+  } catch (err) {
+    out.meetError = String(err && err.message ? err.message : err);
+  }
+  return out;
+}
+
+/**
+ * The Meet link on an event, adding one if it hasn't got one.
+ *
+ * Through the advanced Calendar service, because a conference is not something
+ * CalendarApp can create — see step 3 of the deployment notes above. An event
+ * that already has a conference is left exactly as it is: asking for another
+ * would hand everybody a second link and silently strand whoever kept the
+ * first, which on an event that is re-sent on every edit of the sheet would be
+ * most of them.
+ */
+function ensureMeet(cal, event) {
+  var calId = cal.getId();
+  // CalendarApp ids are "<id>@google.com"; the API wants the id alone.
+  var eventId = event.getId().replace(/@.*$/, '');
+  var current = Calendar.Events.get(calId, eventId);
+  if (current.hangoutLink) return current.hangoutLink;
+  var patched = Calendar.Events.patch(
+    {
+      conferenceData: {
+        createRequest: {
+          requestId: Utilities.getUuid(),
+          conferenceSolutionKey: { type: 'hangoutsMeet' },
+        },
+      },
+    },
+    calId,
+    eventId,
+    // Version 1 is what makes the request a conference request at all, and
+    // "all" is what sends the guests the link rather than leaving it sitting
+    // on an event nobody was told about again.
+    { conferenceDataVersion: 1, sendUpdates: 'all' }
+  );
+  return patched.hangoutLink || '';
 }
 
 /**
@@ -263,5 +322,8 @@ function reply(obj) {
 /** Run once from the editor to confirm the calendar is reachable and grant scopes. */
 function selfTest() {
   Logger.log('Writing to calendar: ' + targetCalendar().getName());
+  // Fails loudly while the Calendar service is missing, which is the whole
+  // reason to run this after pasting the file in.
+  Logger.log('Calendar API reachable: ' + Boolean(Calendar.Events));
   Logger.log('Parsed: ' + parseInTz('2026-08-23 14:00:00', 'America/Los_Angeles'));
 }

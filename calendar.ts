@@ -131,6 +131,11 @@ export type TourEvent = {
   /** Set instead of start/end when the row has a date but no time. */
   allDayOn?: string;
   timeZone: string;
+  /**
+   * A video tour rather than one at the property. The Apps Script reads this:
+   * a virtual tour is given a Google Meet link, and the prospect is on the
+   * guest list to receive it.
+   */
   virtual: boolean;
   /** Guides named on the row that have no address on file. */
   unknownGuides: string[];
@@ -527,10 +532,18 @@ export function tourEventFrom(row: any[], columns: any[]): TourEvent | null {
   const guestSet = new Set(STANDING_GUESTS);
   const unknownGuides: string[] = [];
   for (const g of guides) {
-    const email = known[g.toLowerCase()];
-    if (email) guestSet.add(email);
+    const address = known[g.toLowerCase()];
+    if (address) guestSet.add(address);
     else unknownGuides.push(g);
   }
+  // The prospect is invited to a virtual tour, because for them the invitation
+  // *is* the tour: it is what carries the Meet link, and there is no address to
+  // turn up at instead. Not to one in person — they agreed a time and a place
+  // with whoever they spoke to, and a calendar invitation from an office they
+  // have never emailed is a surprise rather than a service. Never to a
+  // placeholder either: that slot is tomorrow at eight in the morning and is
+  // nobody's agreed time.
+  if (virtual && email && !placeholder) guestSet.add(email);
 
   const title =
     `${streetLabel(street)} ${name} <> ${guides.join(" & ") || "unassigned"}` +
@@ -860,8 +873,17 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
         `[${new Date().toISOString()}] calendar event ` +
           `${updating ? (body.recreated ? "re-created (it had been deleted)" : "updated") : "created"}: ` +
           `"${event.title}" ${event.start ?? `${event.allDayOn} (all day)`} ` +
-          `→ ${event.guests.join(", ")}`
+          `→ ${event.guests.join(", ")}` +
+          (body.meet ? ` (meet: ${body.meet})` : "")
       );
+      // The tour is booked; only the link is missing, so this is a warning
+      // rather than a failure to retry. Almost always the Calendar service
+      // missing from the Apps Script deployment — see tour-calendar.gs.
+      if (body.meetError) {
+        console.warn(
+          `[${new Date().toISOString()}] no Meet link on virtual tour "${event.title}": ${body.meetError}`
+        );
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // Being throttled says nothing about this event — it says the last few
