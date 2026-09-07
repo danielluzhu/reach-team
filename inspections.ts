@@ -587,15 +587,21 @@ export function inspectionSignatures(checklistId: string): LaterSignature[] {
   return (listSignatures.all(checklistId) as SignatureRow[]).map(toSignature);
 }
 
-/** How many signed each inspection afterwards, and who — one query for the list. */
-function signatureSummary(): Map<string, { count: number; who: string }> {
-  const summary = new Map<string, { count: number; who: string }>();
+/**
+ * How many signed each inspection afterwards, and who — one query for the list.
+ *
+ * The names only. The role each one signed under is printed on the report and
+ * belongs there, but it is not something anybody searches by: every report has
+ * a tenant on it, so "tenant" in the filter would match all of them.
+ */
+function signatureSummary(): Map<string, { count: number; names: string }> {
+  const summary = new Map<string, { count: number; names: string }>();
   for (const row of allSignatures.all() as {
     checklist_id: string; signer_name: string; role: string;
   }[]) {
-    const seen = summary.get(row.checklist_id) ?? { count: 0, who: "" };
+    const seen = summary.get(row.checklist_id) ?? { count: 0, names: "" };
     seen.count++;
-    seen.who = `${seen.who} ${row.signer_name} ${row.role}`.trim();
+    seen.names = `${seen.names} ${row.signer_name}`.trim();
     summary.set(row.checklist_id, seen);
   }
   return summary;
@@ -1655,9 +1661,10 @@ const LIST_JS = `
           hit = unit === unitWanted;
         }
         tr.hidden = !hit;
-        // Filtering to a handful shows all of what they say — the match is
-        // often in a line the clamp is sitting on. Clearing the box clamps
-        // them again, so the page goes back to being scannable.
+        // Filtering to a handful shows all of what they say: once the rows
+        // are the ones you asked for, what each walkthrough found is the
+        // thing you came to read. Clearing the box clamps them again, so the
+        // page goes back to being scannable.
         setOpen(tr, hit && !!q);
         if (hit) shown++;
       });
@@ -2516,11 +2523,12 @@ function leaseIndex(): LeaseIndex {
     const address = columns.indexOf("Address");
     const unit = columns.indexOf("Unit");
     const tenant = columns.indexOf("Tenant");
-    const email = columns.indexOf("Email");
     if (address === -1 || tenant === -1) return { byUnit, byBuilding };
 
     for (const row of rows) {
-      const who = [row[tenant], email === -1 ? "" : row[email]].filter(Boolean).join(" ").trim();
+      // The name, and only the name: the filter asks who lives there, not how
+      // to write to them.
+      const who = String(row[tenant] ?? "").trim();
       if (!who) continue;
       const building = buildingKey(row[address]);
       if (!building) continue;
@@ -2555,7 +2563,7 @@ function tenantsOfRecord(index: LeaseIndex, address: string): string[] {
 function listRow(
   i: Inspection,
   notes: number,
-  signed: { count: number; who: string } | undefined,
+  signed: { count: number; names: string } | undefined,
   awaiting: { sign: number; form: number } | undefined,
   tenants: string[]
 ): string {
@@ -2616,27 +2624,36 @@ function listRow(
       }`
     : `<span class="none">Nothing flagged, nothing written.</span>`;
 
+  /* What the filter searches: the street, the unit, and the two people —
+     whoever lives there and whoever walked it. Nothing else.
+
+     Not the findings. A search over them looks generous and reads as broken:
+     "kitchen" answers with every report that has a kitchen in it, and a
+     surname answers with the report that happens to say it in a note. What
+     somebody types into that box is a property or a person, and everything
+     that isn't the one they meant should be gone by the time they stop
+     typing. The findings are still on the page, and still in Ctrl+F. */
+  const unit = addressUnit(c.address);
   const haystack = flatten(
     [
-      c.address,
+      // The street, without the city, state and zip every row shares — those
+      // match everything, which is the same as matching nothing.
+      buildingKey(c.address.split(",")[0]),
       // The unit on its own, so it is a term rather than a fragment of the
       // address: "003" and "3" both find Unit 003.
-      addressUnit(c.address),
+      unit,
+      // The tenant who signed, whoever the lease says lives there, the agent
+      // who walked it, and anyone who put their name to it afterwards.
       c.name,
-      c.email,
-      c.agentName ?? "",
-      // Whoever put their name to it afterwards, so they can be searched for too.
-      signed?.who ?? "",
       ...tenants,
-      signedDate(i.createdAt),
-      ...found.map((d) => `${d.room} ${d.label} ${d.condition} ${d.notes}`),
-      ...wrote.map((w) => `${w.where} ${w.what}`),
+      c.agentName ?? "",
+      signed?.names ?? "",
     ].join(" ")
   );
 
   return `
         <tr data-search="${escapeAttr(haystack)}" data-id="${escapeAttr(i.id)}"
-          data-unit="${escapeAttr(addressUnit(c.address))}">
+          data-unit="${escapeAttr(unit)}">
           <td class="when" data-label="Signed">${escapeHtml(signedDate(i.createdAt))}
             <span class="time">${escapeHtml(signedTime(i.createdAt))}</span></td>
           <td class="address" data-label="Property"><a href="/inspections/${escapeAttr(i.id)}">${escapeHtml(c.address)}</a>
@@ -2678,13 +2695,15 @@ export function renderInspectionsList(nav: string, navCss: string): string {
   <p class="lede">Every signed move-in condition report, newest first &mdash;
     ${inspections.length} in all${withPoor ? `, ${withPoor} with something marked poor` : ""}.
     What each walkthrough found is in the row itself; open a report to read it room by room,
-    or take the PDF the tenant signed. The filter takes several words at once and matches all of
-    them &mdash; <em>4544 unit 3</em>, or a building and the name of whoever is on the lease there,
-    whether or not they were the one who signed.</p>
+    or take the PDF the tenant signed. The filter is on the street, the unit and the people
+    &mdash; the tenant, and whoever walked it. It takes several words at once and matches all of
+    them, so <em>4544 unit 3</em> is one unit, and a building with a name is that person&rsquo;s
+    report there, whether or not they were the one who signed. Everything else drops out of the
+    list as you type.</p>
 
   <div class="toolbar">
     <input type="search" id="inspection-search"
-      placeholder="Filter by property, unit, tenant, agent, date &mdash; or anything written in a note"
+      placeholder="Filter by street, unit, tenant or inspector &mdash; e.g. 4544 unit 3"
       autocomplete="off" aria-label="Filter inspections" />
     <button type="button" id="expand-all" data-act="open">Show all findings</button>
     <span class="count" id="shown-count">${inspections.length} ${
