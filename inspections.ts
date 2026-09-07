@@ -2468,13 +2468,16 @@ type LeaseIndex = { byUnit: Map<string, string[]>; byBuilding: Map<string, strin
 const flatten = (value: unknown) =>
   String(value ?? "").toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, " ").trim();
 
-/** The building, without the city, state, zip and country a form sometimes adds. */
-const buildingKey = (value: unknown) =>
-  flatten(value)
+/** The city, state, zip and country a form sometimes adds — never what anyone means. */
+const withoutPlace = (flat: string) =>
+  flat
     .replace(/\b(seattle|wa|washington|usa)\b/g, " ")
     .replace(/\b\d{5}\b/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+/** The building, without the city, state, zip and country a form sometimes adds. */
+const buildingKey = (value: unknown) => withoutPlace(flatten(value));
 
 /**
  * "Unit 003", "U3", "no. 3" and "3" are the same unit; "Upper Unit" is "upper".
@@ -2489,6 +2492,15 @@ const unitKey = (value: unknown) => {
   const digits = /^u?0*(\d+)$/.exec(bare.replace(/\s+/g, ""));
   return digits ? digits[1] : bare;
 };
+
+/**
+ * The unit out of a whole address: what follows the street, less the city,
+ * state, zip and country. "5238 37th Ave NE, Seattle, WA 98105, USA" is a
+ * house with no unit — not a unit called Seattle, which is what it counted as
+ * until this, both in the filter and in the lookup against the lease.
+ */
+const addressUnit = (address: unknown) =>
+  unitKey(withoutPlace(flatten(String(address ?? "").split(",").slice(1).join(" "))));
 
 /** The Leases sheet, indexed by building and by unit. Empty if it isn't there. */
 function leaseIndex(): LeaseIndex {
@@ -2526,9 +2538,8 @@ function leaseIndex(): LeaseIndex {
 /**
 /** Who the lease says lives at the address a checklist was walked at. */
 function tenantsOfRecord(index: LeaseIndex, address: string): string[] {
-  const [first, ...rest] = String(address ?? "").split(",");
-  const building = buildingKey(first);
-  const exact = index.byUnit.get(`${building}|${unitKey(rest.join(" "))}`);
+  const building = buildingKey(String(address ?? "").split(",")[0]);
+  const exact = index.byUnit.get(`${building}|${addressUnit(address)}`);
   if (exact) return exact;
   const whole = index.byBuilding.get(building) ?? [];
   // A house or a two-flat: everyone on it lives at that address. A fifty-unit
@@ -2610,7 +2621,7 @@ function listRow(
       c.address,
       // The unit on its own, so it is a term rather than a fragment of the
       // address: "003" and "3" both find Unit 003.
-      unitKey(c.address.split(",").slice(1).join(" ")),
+      addressUnit(c.address),
       c.name,
       c.email,
       c.agentName ?? "",
@@ -2625,7 +2636,7 @@ function listRow(
 
   return `
         <tr data-search="${escapeAttr(haystack)}" data-id="${escapeAttr(i.id)}"
-          data-unit="${escapeAttr(unitKey(c.address.split(",").slice(1).join(" ")))}">
+          data-unit="${escapeAttr(addressUnit(c.address))}">
           <td class="when" data-label="Signed">${escapeHtml(signedDate(i.createdAt))}
             <span class="time">${escapeHtml(signedTime(i.createdAt))}</span></td>
           <td class="address" data-label="Property"><a href="/inspections/${escapeAttr(i.id)}">${escapeHtml(c.address)}</a>
