@@ -359,6 +359,25 @@ Columns:
   with its column, and the move is undoable like any other edit.
 - **Rename** — double-click a header, or right-click it.
 
+Until 2026-09-08 none of those three widths meant very much. The grid's `<table>`
+was left at `width: auto`, which for a table is shrink-to-fit: it will not grow
+past its container. So the fifteen columns of Leases — about 2400px of them —
+were packed into whatever the window was, and every column drew at a fraction of
+its set width. A 360px Comment came out **253px on a 1920px screen and 91px on a
+1024px one**, and `.grid-wrap` never showed a horizontal scrollbar because the
+table never overflowed it.
+
+The visible symptom was resizing. A drag seeds itself from the width the header
+is *drawn* at and stores the result, so on a squeezed table dragging an edge
+60px moved the column by about 20 and wrote a number unrelated to either. Drag
+right and a column could come out **narrower** than it started. Setting a width
+by hand, or fitting one to its contents, was quietly scaled away the same way.
+
+The table is now `width: max-content`: it is as wide as its columns say and the
+wrapper takes the overflow, which is the sideways scroll the sticky row-number
+column always assumed. A 60px drag now moves a column exactly 60px, scrolled or
+not, and a sheet whose columns fit the window is drawn exactly as before.
+
 ### Importing a block of rows
 
 A season of applications, or a landlord's spreadsheet of leases, arrives as a

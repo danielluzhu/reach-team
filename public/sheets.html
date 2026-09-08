@@ -104,7 +104,17 @@
 
   /* ---- grid ---- */
   .grid-wrap { flex: 1; overflow: auto; outline: none; background: #fff; }
-  table { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 0.82rem; }
+  /* `width: max-content` is what makes a column width mean anything. A table
+     left at `width: auto` is shrink-to-fit: it never grows past .grid-wrap, so
+     the fifteen columns of Leases — 2400px of them — were squeezed into the
+     window and every column drew at a fraction of its set width (a 360px
+     Comment came out 91px on a 1024px screen). Dragging an edge then moved the
+     column by a third of the distance dragged, and .grid-wrap never scrolled
+     sideways because the table never overflowed it. Sizing to max-content lets
+     the table be as wide as its columns say and hands the overflow to the
+     wrapper, which is the scroll the sticky rownum column already assumes. */
+  table { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 0.82rem;
+    width: max-content; }
   th, td {
     border-right: 1px solid #e6e6e6; border-bottom: 1px solid #e6e6e6;
     padding: 0 6px; height: 30px; text-align: left; font-weight: 400;
