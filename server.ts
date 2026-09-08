@@ -33,6 +33,7 @@ import {
   createSignLink,
   deleteInspectionNote,
   deleteInspectionSignature,
+  inspectionCoverage,
   inspectionSignLinks,
   isChecklistPath,
   proxyChecklistApp,
@@ -50,6 +51,7 @@ import {
   revokeSignLink,
   serveInspectionPdf,
   serveInspectionUpload,
+  setInspectionKind,
   signByLink,
 } from "./inspections";
 import {
@@ -1782,6 +1784,48 @@ const server = Bun.serve({
       return Response.json(
         { ok: true, note: renderNote(result.note, user) },
         { status: 201, headers: { "Cache-Control": "no-store, private" } }
+      );
+    }
+
+    /**
+     * What a walkthrough was: the start of a tenancy, the end of one, or
+     * neither. Nothing in the signed checklist says, so this is the office's
+     * own answer, kept beside it — see inspection_kinds in db.ts.
+     *
+     * Anyone signed in may answer, and answering again just changes it: this
+     * is a label on a record, not a change to one, and the checklist and its
+     * PDF are untouched either way. An empty kind drops back to the guess.
+     *
+     * The re-rendered coverage table comes back with it, because a kind moves
+     * a unit between the columns of the table above the list.
+     */
+    const inspectionKind = url.pathname.match(/^\/api\/inspections\/([0-9a-f-]{36})\/kind$/);
+    if (inspectionKind) {
+      if (req.method !== "PUT") return new Response("Method not allowed", { status: 405 });
+      let body: any;
+      try {
+        body = await req.json();
+      } catch {
+        return Response.json({ error: "expected a JSON body" }, { status: 400 });
+      }
+      const result = setInspectionKind(inspectionKind[1], user, body?.kind ?? "");
+      if ("error" in result) {
+        return Response.json(
+          { error: result.error },
+          { status: result.status, headers: { "Cache-Control": "no-store" } }
+        );
+      }
+      const coverage = inspectionCoverage();
+      return Response.json(
+        {
+          ok: true,
+          kind: result.verdict.kind,
+          guessed: result.verdict.guessed,
+          because: result.verdict.because,
+          coverage: coverage?.table ?? null,
+          summary: coverage?.summary ?? null,
+        },
+        { headers: { "Cache-Control": "no-store, private" } }
       );
     }
 

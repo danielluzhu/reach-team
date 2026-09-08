@@ -1075,6 +1075,170 @@ export function signByLink(
   return { signature: toSignature(row) };
 }
 
+/* --------------------------------------------------------------------- kinds */
+
+/**
+ * Which walkthrough a report was — the start of a tenancy, the end of one, or
+ * neither.
+ *
+ * `checklists.db` does not say and cannot be made to: the form that produces a
+ * checklist has no idea whether the tenant is arriving or leaving, and a
+ * move-out is started by duplicating the move-in, so what comes back is just
+ * another checklist. The answer therefore lives in this app's own database
+ * (see `inspection_kinds` in db.ts), beside the notes and the later signatures.
+ *
+ * Two rules, in this order, and the page always says which applied:
+ *
+ * - **Somebody said.** A stored row wins over any amount of inference.
+ * - **Otherwise it is guessed**, and shown as a guess — marked with a `?` and
+ *   a dashed control. Never as a fact: a condition report is what a deposit
+ *   dispute turns on, and a move-out labelled move-in by a clever rule is
+ *   worse than one labelled nothing.
+ */
+export const INSPECTION_KINDS = ["move-in", "move-out", "generic"] as const;
+export type InspectionKind = (typeof INSPECTION_KINDS)[number];
+
+export const KIND_LABELS: Record<InspectionKind, string> = {
+  "move-in": "Move-in",
+  "move-out": "Move-out",
+  generic: "Generic",
+};
+
+const isKind = (value: unknown): value is InspectionKind =>
+  INSPECTION_KINDS.includes(value as InspectionKind);
+
+/** What the page shows for one inspection: the kind, and where it came from. */
+export type KindVerdict = {
+  kind: InspectionKind;
+  /** True when nobody has said, so this is inference rather than a record. */
+  guessed: boolean;
+  /** Who said, when it wasn't guessed. */
+  setByName: string | null;
+  /** Why the guess came out this way, for the title text on the control. */
+  because: string;
+};
+
+const readKinds = db.query(
+  `SELECT checklist_id, kind, set_by_name FROM inspection_kinds`
+);
+const upsertKind = db.query(
+  `INSERT INTO inspection_kinds (checklist_id, kind, set_by, set_by_name, set_at)
+   VALUES (?, ?, ?, ?, ?)
+   ON CONFLICT(checklist_id) DO UPDATE SET
+     kind = excluded.kind, set_by = excluded.set_by,
+     set_by_name = excluded.set_by_name, set_at = excluded.set_at`
+);
+const clearKind = db.query(`DELETE FROM inspection_kinds WHERE checklist_id = ?`);
+
+/*
+ * A note on evidence that looked useful and isn't.
+ *
+ * `inspection_sign_links.fresh` says whether a duplicate went out blank or
+ * carrying the last walkthrough's answers, and it is tempting to read a blank
+ * one as a move-in for somebody new. It doesn't work: all fifteen duplicates
+ * sent to a tenant so far went out non-fresh, and every one of them was a new
+ * tenant's move-in — Hunter Schulz into 201, Alias Shearman into 001, Claire
+ * Dowling into 301. `fresh` records how the form was filled in, not what the
+ * walkthrough was, so it is deliberately not consulted here. The tenant on the
+ * report is the signal that actually holds.
+ */
+
+/** The unit a checklist was walked at, as a key two spellings of it share. */
+const inspectionUnitKey = (address: string) =>
+  `${buildingKey(String(address ?? "").split(",")[0])}|${addressUnit(address)}`;
+
+/**
+ * The kind of every inspection, stored answers first and guesses after.
+ *
+ * The guess, where nobody has said: a tenancy is walked twice, once on the way
+ * in and once on the way out, so **the first report for a tenant in a unit is
+ * their move-in and a second one is their move-out**. That is what the records
+ * actually look like — Unit 001 has Oluwatomisin Adenekan twice, a fortnight
+ * apart, then Alias Shearman once — and it survives a unit changing hands,
+ * which ordering by unit alone does not: the new tenant's first report is their
+ * move-in, not the unit's third walkthrough.
+ *
+ * A third report for the same tenant in the same unit is not a second move-out,
+ * so it is left generic rather than forced into a box.
+ */
+function inspectionKinds(inspections: Inspection[]): Map<string, KindVerdict> {
+  const stored = new Map<string, { kind: InspectionKind; setByName: string | null }>();
+  for (const row of readKinds.all() as {
+    checklist_id: string; kind: string; set_by_name: string | null;
+  }[]) {
+    if (isKind(row.kind)) stored.set(row.checklist_id, { kind: row.kind, setByName: row.set_by_name });
+  }
+
+  // Oldest first inside each tenancy, so "the first one" means the first one.
+  const byTenancy = new Map<string, Inspection[]>();
+  for (const i of inspections) {
+    const key = `${inspectionUnitKey(i.checklist.address)}|${flatten(i.checklist.name)}`;
+    byTenancy.set(key, [...(byTenancy.get(key) ?? []), i]);
+  }
+  const ordinal = new Map<string, number>();
+  for (const group of byTenancy.values()) {
+    [...group]
+      .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+      .forEach((i, n) => ordinal.set(i.id, n));
+  }
+
+  const out = new Map<string, KindVerdict>();
+  for (const i of inspections) {
+    const said = stored.get(i.id);
+    if (said) {
+      out.set(i.id, {
+        kind: said.kind, guessed: false, setByName: said.setByName,
+        because: `Set by ${said.setByName || "the office"}.`,
+      });
+      continue;
+    }
+    const n = ordinal.get(i.id) ?? 0;
+    out.set(i.id, {
+      kind: n === 0 ? "move-in" : n === 1 ? "move-out" : "generic",
+      guessed: true,
+      setByName: null,
+      because:
+        n === 0
+          ? "Guessed: the first report for this tenant in this unit."
+          : n === 1
+            ? "Guessed: the second report for this tenant in this unit."
+            : "Guessed: neither the first nor the second report for this tenant here.",
+    });
+  }
+  return out;
+}
+
+/**
+ * Record what a report actually was, or clear it back to the guess.
+ *
+ * Anyone signed in may say. Nothing about the checklist or its PDF changes —
+ * this is the office's own note about a record, never a change to one.
+ */
+export function setInspectionKind(
+  checklistId: string,
+  user: User,
+  kind: unknown
+): { ok: true; verdict: KindVerdict } | { error: string; status: number } {
+  if (!readInspection(checklistId)) return { error: "No such inspection.", status: 404 };
+
+  // An empty kind is "I don't know either" — drop back to the guess rather
+  // than storing a third state that means the same thing.
+  if (kind === null || kind === "") {
+    clearKind.run(checklistId);
+  } else {
+    if (!isKind(kind)) {
+      return { error: `A kind is one of ${INSPECTION_KINDS.join(", ")}.`, status: 400 };
+    }
+    upsertKind.run(checklistId, kind, user.username, user.display_name ?? null, new Date().toISOString());
+  }
+
+  const inspections = listInspections() ?? [];
+  const verdict = inspectionKinds(inspections).get(checklistId);
+  return verdict
+    ? { ok: true, verdict }
+    : { error: "That inspection could not be re-read.", status: 500 };
+}
+
 /* ------------------------------------------------------------------ counting */
 
 type Tally = {
@@ -1352,6 +1516,46 @@ const LIST_CSS = `
        scrolled to. The furniture is in PAGE_CSS, shared with the other one. */
     #remote-sign .links:not(:empty) { margin-top: 0.9rem; }
 
+    /* ---- which walkthrough a report was ---- */
+
+    /* Put away with the disclosure triangle, and stays put away — five columns
+       nobody is currently reading are five columns in the way of the findings. */
+    .coverage { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px;
+      margin: 0 0 1.1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .coverage > summary { cursor: pointer; padding: 0.65rem 0.85rem; display: flex; flex-wrap: wrap;
+      gap: 0.5rem; align-items: baseline; list-style-position: inside; }
+    .coverage > summary::-webkit-details-marker { color: var(--muted); }
+    .coverage > summary:hover { background: #f9fafb; }
+    .coverage .cap { font-weight: 600; font-size: 0.9rem; }
+    .coverage .sum { color: var(--muted); font-size: 0.8rem; }
+    .coverage > .lede { margin: 0 0.85rem 0.7rem; font-size: 0.82rem; color: #4b5563; max-width: 62rem; }
+    .coverage .table-wrap { border-top: 1px solid #eee; }
+    #coverage-table { box-shadow: none; font-size: 0.86rem; }
+    #coverage-table th { background: #fafafa; }
+    #coverage-table td { vertical-align: middle; }
+    /* The four answers are what the eye runs down, so they are kept together
+       and the address gives up the slack rather than the other way round. */
+    #coverage-table td.address { width: 34%; min-width: 13rem; font-weight: 600; }
+    #coverage-table td.signed { width: 6rem; white-space: nowrap; }
+    #coverage-table td.cover { width: 12rem; white-space: nowrap; }
+    #coverage-table td.cover a { text-decoration: none; font-weight: 600; }
+    #coverage-table td.cover a:hover { text-decoration: underline; }
+    /* The dash is the point of the table, so it is legible rather than faint —
+       but not alarming: a unit whose tenant is still living there is supposed
+       to have no move-out yet. */
+    #coverage-table td.cover .gap { color: #9ca3af; font-weight: 600; cursor: help; }
+    #coverage-table .also { display: block; color: var(--muted); font-size: 0.74rem; font-weight: 400; }
+
+    /* A guess is styled as one. The moment somebody says, it stops being
+       dotted and starts reading like every other recorded fact on the page. */
+    td.kind-cell { width: 7.5rem; }
+    select.kind { font: 600 0.78rem system-ui, sans-serif; padding: 0.2rem 0.3rem; border-radius: 6px;
+      background: #fff; color: #374151; border: 1px solid #d1d5db; max-width: 100%; cursor: pointer; }
+    select.kind[data-guessed="yes"] { border-style: dashed; color: #6b7280; background: #fcfcfd; }
+    select.kind:focus { outline: 2px solid #93c5fd; outline-offset: -1px; }
+    select.kind.saving { opacity: 0.55; }
+    select.kind.failed { border-color: #dc2626; color: #991b1b; border-style: solid; }
+
     .flag { display: inline-block; padding: 0.05rem 0.4rem; border-radius: 999px; font-size: 0.75rem;
       font-weight: 600; margin: 0 0.25rem 0.2rem 0; white-space: nowrap; }
     .flag.poor { background: #fee2e2; color: #991b1b; }
@@ -1580,6 +1784,24 @@ const LIST_JS = `
   if (!table) return;
   var rows = [].slice.call(table.querySelectorAll("tbody tr[data-search]"));
   var empty = table.querySelector("tr.no-match");
+  var coverTable = document.getElementById("coverage-table");
+  var coverRows = coverTable
+    ? [].slice.call(coverTable.querySelectorAll("tbody tr[data-search]")) : [];
+  var coverEmpty = coverTable ? coverTable.querySelector("tr.no-match") : null;
+  var coverSum = document.getElementById("coverage-sum");
+  if (coverSum) coverSum.dataset.all = coverSum.textContent;
+
+  /* Open or shut is a preference, not a state of the data: somebody who put
+     the table away wants it away tomorrow too. Per browser, like the wrap
+     toggle on the sheets page. */
+  var panel = document.getElementById("coverage");
+  if (panel) {
+    var KEY = "crm.inspections.coverage";
+    try { if (localStorage.getItem(KEY) === "shut") panel.open = false; } catch (e) {}
+    panel.addEventListener("toggle", function () {
+      try { localStorage.setItem(KEY, panel.open ? "open" : "shut"); } catch (e) {}
+    });
+  }
 
   function setOpen(tr, open) {
     var list = tr.querySelector(".found .list");
@@ -1652,14 +1874,19 @@ const LIST_JS = `
         }
         return function (hay) { return hay.indexOf(term) !== -1; };
       });
-      var shown = 0;
-      rows.forEach(function (tr) {
+      function hits(tr) {
         var hay = tr.dataset.search;
         var hit = terms.every(function (matches) { return matches(hay); });
         if (hit && unitWanted) {
           var unit = (tr.dataset.unit || "").replace(/^0+(?=[0-9])/, "");
           hit = unit === unitWanted;
         }
+        return hit;
+      }
+
+      var shown = 0;
+      rows.forEach(function (tr) {
+        var hit = hits(tr);
         tr.hidden = !hit;
         // Filtering to a handful shows all of what they say: once the rows
         // are the ones you asked for, what each walkthrough found is the
@@ -1669,6 +1896,22 @@ const LIST_JS = `
         if (hit) shown++;
       });
       if (empty) empty.hidden = shown !== 0;
+
+      /* The table above is about the same units, so one box filters both. A
+         search that narrowed the list to one report and left forty units
+         sitting above it reads as a search that half works. */
+      var covered = 0;
+      coverRows.forEach(function (tr) {
+        var hit = hits(tr);
+        tr.hidden = !hit;
+        if (hit) covered++;
+      });
+      if (coverEmpty) coverEmpty.hidden = covered !== 0;
+      if (coverSum) {
+        coverSum.textContent = covered === coverRows.length
+          ? coverSum.dataset.all
+          : covered + " of " + coverRows.length + " units";
+      }
       if (count) count.textContent = shown === rows.length
         ? rows.length + (rows.length === 1 ? " inspection" : " inspections")
         : shown + " of " + rows.length;
@@ -1677,6 +1920,92 @@ const LIST_JS = `
   }
 
   syncAllLabel();
+})();`;
+
+/**
+ * Saying what a walkthrough was.
+ *
+ * The select is the whole interface: pick one, and it is recorded. There is no
+ * save button because there is nothing else on the row to save, and no undo
+ * because the correction for a wrong answer is the right answer, one click
+ * away in the same control.
+ *
+ * The table above is re-rendered from the server's answer rather than patched
+ * here: a kind can move a unit out of the "no move-out" count, and working that
+ * out twice — once in TypeScript and once in this file — is how the two come to
+ * disagree.
+ */
+const KIND_JS = `
+(function () {
+  var table = document.getElementById("inspections");
+  if (!table) return;
+
+  function relabel(select, guessed) {
+    select.dataset.guessed = guessed ? "yes" : "no";
+    for (var i = 0; i < select.options.length; i++) {
+      var option = select.options[i];
+      var name = option.textContent.replace(/\\?$/, "");
+      option.textContent = guessed && option.value === select.value ? name + "?" : name;
+    }
+  }
+
+  function refreshCoverage(html, summary) {
+    var old = document.getElementById("coverage-table");
+    if (!old || !html) return;
+    old.outerHTML = html;
+    var sum = document.getElementById("coverage-sum");
+    if (sum && summary) { sum.textContent = summary; sum.dataset.all = summary; }
+    /* The filter box holds a list of rows it found on load, and one of them
+       has just been replaced. Re-running it rebuilds that list and re-applies
+       whatever is typed, so a change made while filtered doesn't bring the
+       other forty units back. */
+    var box = document.getElementById("inspection-search");
+    if (box) box.dispatchEvent(new Event("input"));
+  }
+
+  table.addEventListener("change", function (e) {
+    var select = e.target.closest("select.kind");
+    if (!select) return;
+    var was = select.dataset.was || "";
+    var chosen = select.value;
+    select.classList.remove("failed");
+    select.classList.add("saving");
+    select.disabled = true;
+
+    fetch("/api/inspections/" + select.dataset.id + "/kind", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: chosen }),
+    })
+      .then(function (res) {
+        return res.json().catch(function () { return {}; }).then(function (data) {
+          if (!res.ok) throw new Error(data.error || "That wasn't saved.");
+          return data;
+        });
+      })
+      .then(function (data) {
+        select.value = data.kind;
+        select.dataset.was = data.kind;
+        select.title = data.because || "";
+        relabel(select, !!data.guessed);
+        refreshCoverage(data.coverage, data.summary);
+      })
+      .catch(function (err) {
+        // Put the control back to what the server still believes, so the page
+        // never shows a kind that isn't recorded anywhere.
+        if (was) select.value = was;
+        select.classList.add("failed");
+        select.title = err.message;
+      })
+      .finally(function () {
+        select.classList.remove("saving");
+        select.disabled = false;
+      });
+  });
+
+  [].slice.call(table.querySelectorAll("select.kind")).forEach(function (select) {
+    select.dataset.was = select.value;
+  });
 })();`;
 
 /**
@@ -2556,6 +2885,204 @@ function tenantsOfRecord(index: LeaseIndex, address: string): string[] {
 }
 
 /**
+ * The kind control on a row: what this report was, and one click to correct it.
+ *
+ * A `<select>` rather than a pill with a menu behind it, because the whole
+ * interaction is picking one of three and the browser already does that on
+ * every device. `data-guessed` is what the styling keys off, so a guess reads
+ * as the softer thing it is and stops doing so the moment somebody says.
+ */
+function kindControl(id: string, verdict: KindVerdict): string {
+  return `<select class="kind" data-id="${escapeAttr(id)}"
+            data-guessed="${verdict.guessed ? "yes" : "no"}"
+            title="${escapeAttr(verdict.because)}"
+            aria-label="What this walkthrough was">${INSPECTION_KINDS.map(
+              (k) =>
+                `<option value="${k}"${k === verdict.kind ? " selected" : ""}>${
+                  KIND_LABELS[k]
+                }${verdict.guessed && k === verdict.kind ? "?" : ""}</option>`
+            ).join("")}</select>`;
+}
+
+/** One unit's walkthroughs, sorted into the three kinds. */
+type UnitCoverage = {
+  label: string;
+  unit: string;
+  haystack: string;
+  signed: number;
+  awaiting: number;
+  latest: Record<InspectionKind, { id: string; when: string; count: number } | null>;
+};
+
+/**
+ * The units, and which of the three walkthroughs each one has.
+ *
+ * The list below answers "what did this report find". This answers the other
+ * question the office actually has, which the list cannot: *which unit is
+ * missing one*. A tenancy that ends with no move-out report is a deposit
+ * argued from memory, and it is invisible in a list sorted by date — the gap
+ * is the thing worth seeing, so it gets a column of its own and a dash in it.
+ */
+function unitCoverage(
+  inspections: Inspection[],
+  kinds: Map<string, KindVerdict>,
+  awaiting: Map<string, { sign: number; form: number }>,
+  leases: LeaseIndex
+): UnitCoverage[] {
+  const groups = new Map<string, Inspection[]>();
+  for (const i of inspections) {
+    const key = inspectionUnitKey(i.checklist.address);
+    groups.set(key, [...(groups.get(key) ?? []), i]);
+  }
+
+  const out: UnitCoverage[] = [];
+  for (const group of groups.values()) {
+    // listInspections() is newest first, so the first of a group is both the
+    // most recent walkthrough and the most recent spelling of the address.
+    const newest = group[0];
+    const latest = { "move-in": null, "move-out": null, generic: null } as UnitCoverage["latest"];
+    for (const i of group) {
+      const kind = kinds.get(i.id)?.kind ?? "generic";
+      const seen = latest[kind];
+      if (seen) seen.count++;
+      else latest[kind] = { id: i.id, when: signedDate(i.createdAt), count: 1 };
+    }
+    const unit = addressUnit(newest.checklist.address);
+    out.push({
+      label: newest.checklist.address,
+      unit,
+      // Filtered by the same box and the same rules as the list below it, so
+      // typing a unit narrows both views rather than only the lower one.
+      haystack: flatten(
+        [
+          buildingKey(newest.checklist.address.split(",")[0]),
+          unit,
+          ...group.map((i) => i.checklist.name),
+          ...tenantsOfRecord(leases, newest.checklist.address),
+        ].join(" ")
+      ),
+      signed: group.length,
+      awaiting: group.reduce((n, i) => {
+        const w = awaiting.get(i.id);
+        return n + (w ? w.sign + w.form : 0);
+      }, 0),
+      latest,
+    });
+  }
+
+  // By building, then by unit as a number where it is one — so 2, 3 and 106
+  // are in that order rather than 106, 2, 3.
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+  return out.sort((a, b) => collator.compare(a.label, b.label));
+}
+
+/** One cell of the coverage table: the walkthrough of that kind, or the gap. */
+function coverageCell(
+  kind: InspectionKind,
+  at: { id: string; when: string; count: number } | null
+): string {
+  if (!at) {
+    return `<td class="cover none" data-label="${KIND_LABELS[kind]}"><span class="gap"
+      title="No ${KIND_LABELS[kind].toLowerCase()} walkthrough recorded for this unit">&mdash;</span></td>`;
+  }
+  return `<td class="cover" data-label="${KIND_LABELS[kind]}">
+    <a href="/inspections/${escapeAttr(at.id)}">${escapeHtml(at.when)}</a>${
+      at.count > 1 ? `<span class="also">+${at.count - 1} more</span>` : ""
+    }</td>`;
+}
+
+/** Just the table. Re-rendered on its own when a kind changes underneath it. */
+function coverageTable(rows: UnitCoverage[]): string {
+  return `<table id="coverage-table">
+        <thead>
+          <tr><th>Unit</th><th>Signed</th><th>Move-in</th><th>Move-out</th><th>Generic</th></tr>
+        </thead>
+        <tbody>
+          ${
+            rows.length
+              ? rows
+                  .map(
+                    (r) => `
+          <tr data-search="${escapeAttr(r.haystack)}" data-unit="${escapeAttr(r.unit)}">
+            <td class="address" data-label="Unit">${escapeHtml(r.label)}</td>
+            <td class="signed" data-label="Signed">${r.signed}${
+              r.awaiting ? `<span class="also">${r.awaiting} out</span>` : ""
+            }</td>
+            ${coverageCell("move-in", r.latest["move-in"])}
+            ${coverageCell("move-out", r.latest["move-out"])}
+            ${coverageCell("generic", r.latest.generic)}
+          </tr>`
+                  )
+                  .join("") +
+                `\n          <tr class="empty no-match" hidden><td colspan="5">No unit matches that.</td></tr>`
+              : `<tr class="empty"><td colspan="5">No inspections have been signed yet.</td></tr>`
+          }
+        </tbody>
+      </table>`;
+}
+
+/**
+ * The line on the summary, which is also what the filter puts back.
+ *
+ * A literal "·" rather than `&middot;`, because this string is served two ways:
+ * into the HTML on load, and to the browser as JSON when a kind changes, where
+ * it is assigned with `textContent` and an entity would be shown as its own
+ * five characters.
+ */
+function coverageSummary(rows: UnitCoverage[]): string {
+  const missing = rows.filter((r) => !r.latest["move-out"]).length;
+  return `${rows.length} ${rows.length === 1 ? "unit" : "units"}${
+    missing ? ` · ${missing} with no move-out` : ""
+  }`;
+}
+
+/**
+ * The coverage table, in a `<details>` so it can be put away.
+ *
+ * Open by default and remembered per browser: it is the first thing worth
+ * seeing on the page, and it is also five columns somebody scrolling past for
+ * the findings does not want in the way every time.
+ */
+function renderCoverage(rows: UnitCoverage[]): string {
+  return `
+  <details class="coverage" id="coverage" open>
+    <summary>
+      <span class="cap">Every unit, and which walkthroughs it has</span>
+      <span class="sum" id="coverage-sum">${coverageSummary(rows)}</span>
+    </summary>
+    <p class="lede">A tenancy is walked twice, and the gap is what this is for: a unit with no
+      move-out report is a deposit argued from memory. <strong>Move-in</strong>, <strong>move-out</strong>
+      and <strong>generic</strong> are what the office says a report was &mdash; a checklist itself
+      never knows, so an unset one is guessed from the records and marked with a <em>?</em> in the
+      list below, where any row can be corrected.</p>
+    <div class="table-wrap">
+      ${coverageTable(rows)}
+    </div>
+  </details>`;
+}
+
+/**
+ * The coverage table as it stands right now, for the moment after somebody
+ * changes what a report was.
+ *
+ * Re-rendered by the same code that drew it the first time rather than patched
+ * in the browser — the same bargain as a comment coming back from the server
+ * formatted: two copies of these rules would be two answers to the same
+ * question within a fortnight.
+ */
+export function inspectionCoverage(): { table: string; summary: string } | null {
+  const inspections = listInspections();
+  if (inspections === null) return null;
+  const rows = unitCoverage(
+    inspections,
+    inspectionKinds(inspections),
+    outstandingLinks(),
+    leaseIndex()
+  );
+  return { table: coverageTable(rows), summary: coverageSummary(rows) };
+}
+
+/**
  * One row. Everything that identifies the inspection is squeezed left so the
  * findings column can have the width: a reader is here to see what the
  * walkthrough turned up, not to admire six columns of counts.
@@ -2565,7 +3092,8 @@ function listRow(
   notes: number,
   signed: { count: number; names: string } | undefined,
   awaiting: { sign: number; form: number } | undefined,
-  tenants: string[]
+  tenants: string[],
+  verdict: KindVerdict
 ): string {
   const c = i.checklist;
   const t = tally(c);
@@ -2659,6 +3187,7 @@ function listRow(
           <td class="address" data-label="Property"><a href="/inspections/${escapeAttr(i.id)}">${escapeHtml(c.address)}</a>
             <span class="sub">${c.bedrooms} bd &middot; ${c.bathrooms} ba</span>
             <span class="sub">${t.rooms} rooms &middot; ${t.items} items</span></td>
+          <td class="kind-cell" data-label="Walkthrough">${kindControl(i.id, verdict)}</td>
           <td class="who" data-label="Tenant">${escapeHtml(c.name)}
             <span class="sub">${escapeHtml(c.email)}</span>
             <span class="sub">Agent: ${escapeHtml(c.agentName || "none")}</span></td>
@@ -2691,6 +3220,8 @@ export function renderInspectionsList(nav: string, navCss: string): string {
   const signed = signatureSummary();
   const awaiting = outstandingLinks();
   const leases = leaseIndex();
+  const kinds = inspectionKinds(inspections);
+  const coverage = unitCoverage(inspections, kinds, awaiting, leases);
   const body = `  <h1>Inspections</h1>
   <p class="lede">Every signed move-in condition report, newest first &mdash;
     ${inspections.length} in all${withPoor ? `, ${withPoor} with something marked poor` : ""}.
@@ -2711,11 +3242,13 @@ export function renderInspectionsList(nav: string, navCss: string): string {
     }</span>
   </div>
 
+  ${renderCoverage(coverage)}
+
   <div class="table-wrap">
     <table id="inspections">
       <thead>
         <tr>
-          <th>Signed</th><th>Property</th><th>Tenant</th><th>Flags</th>
+          <th>Signed</th><th>Property</th><th>Walkthrough</th><th>Tenant</th><th>Flags</th>
           <th>Defects &amp; notes</th><th></th>
         </tr>
       </thead>
@@ -2729,12 +3262,15 @@ export function renderInspectionsList(nav: string, navCss: string): string {
                     counts.get(i.id) ?? 0,
                     signed.get(i.id),
                     awaiting.get(i.id),
-                    tenantsOfRecord(leases, i.checklist.address)
+                    tenantsOfRecord(leases, i.checklist.address),
+                    kinds.get(i.id) ?? {
+                      kind: "generic", guessed: true, setByName: null, because: "Guessed.",
+                    }
                   )
                 )
                 .join("") +
-              `\n        <tr class="empty no-match" hidden><td colspan="6">No inspection matches that.</td></tr>`
-            : `<tr class="empty"><td colspan="6">No inspections have been signed yet.</td></tr>`
+              `\n        <tr class="empty no-match" hidden><td colspan="7">No inspection matches that.</td></tr>`
+            : `<tr class="empty"><td colspan="7">No inspections have been signed yet.</td></tr>`
         }
       </tbody>
     </table>
@@ -2777,6 +3313,7 @@ export function renderInspectionsList(nav: string, navCss: string): string {
   ${DUPLICATE_DIALOG}
 
   <script>${LIST_JS}</script>
+  <script>${KIND_JS}</script>
   <script>${REMOTE_SIGN_JS}</script>
   <script>${DUPLICATE_JS}</script>`;
   return page("Inspections", nav, navCss, LIST_CSS, body);

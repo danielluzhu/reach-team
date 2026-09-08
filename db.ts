@@ -368,3 +368,29 @@ db.run(`
   )`);
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_plate_whitelist ON plate_whitelist(plate)`);
+
+/**
+ * Which walkthrough a signed inspection was: the one at the start of a
+ * tenancy, the one at the end, or neither.
+ *
+ * Nothing in `checklists.db` says. A checklist records the property, the rooms
+ * and the signature, and the app that produces one has no idea whether the
+ * tenant is arriving or leaving — a move-out is started by duplicating a
+ * move-in, and what comes back is just another checklist. So the answer is
+ * kept here, beside the notes and the later signatures, for the same reason
+ * they are: the checklist is what somebody signed, and this is what the office
+ * knows about it afterwards.
+ *
+ * A row exists only where somebody *said*. Everything else is guessed from the
+ * evidence at read time and shown as a guess, so the page never presents an
+ * inference as a fact — which on a document that settles a deposit dispute is
+ * the whole point of storing this at all.
+ */
+db.run(`
+  CREATE TABLE IF NOT EXISTS inspection_kinds (
+    checklist_id TEXT PRIMARY KEY,
+    kind         TEXT NOT NULL,
+    set_by       TEXT NOT NULL,
+    set_by_name  TEXT,
+    set_at       TEXT NOT NULL
+  )`);

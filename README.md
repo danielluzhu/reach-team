@@ -1024,8 +1024,8 @@ unreadable checklist database costs that page alone — the door codes on `/`
 still come up, which is the half of this app somebody is looking at when a
 door won't open.
 
-The list gives each report its date, property, tenant, agent, how many rooms and
-items it covers, how many items were marked **poor** or left blank, what photos
+The list gives each report its date, property, **which walkthrough it was**,
+tenant, agent, how many rooms and items it covers, how many items were marked **poor** or left blank, what photos
 and videos came with it, and how many comments have been added since it was
 signed. The last column holds the PDF, **Remote signing** — a
 link out to somebody who has to sign it and has no account here — and
@@ -1049,6 +1049,59 @@ findings** in the toolbar unclamps the page. The clamp is CSS — the text is
 still in the row, so the browser's own find still hits it, and so does the
 filter box: typing `dishwasher` or `smoke detector` finds the report somebody
 half remembers and unclamps what it says.
+
+### Which walkthrough a report was, and which unit is missing one
+
+A tenancy is walked twice — once on the way in and once on the way out — and the
+question the list above cannot answer is *which unit is missing the second one*.
+A tenancy that ends with no move-out report is a deposit argued from memory, and
+in a list sorted by date the gap is invisible, because a gap has no row.
+
+So above the list there is a second table, in a `<details>` that opens and shuts
+and is remembered per browser: **one row per unit, and a column each for
+Move-in, Move-out and Generic**, holding the date of the most recent walkthrough
+of that kind (and `+N more` where there have been others), or a dash where there
+is none. **Signed** is how many signed reports that unit has in all, with how
+many links are still out under it. One filter box drives both tables, so typing
+a unit narrows the coverage table and the list together.
+
+**Nothing in a signed checklist says which kind it is.** `checklists.db` holds
+the property, the rooms, the answers and the signature; the app that produces
+one has no idea whether the tenant is arriving or leaving, and a move-out is
+started by duplicating a move-in, so what comes back is just another checklist.
+
+The answer is therefore kept here, in `inspection_kinds` — beside the comments
+and the later signatures, for the same reason those are: the checklist is what
+somebody signed, and this is what the office knows about it afterwards. A row
+exists only where **somebody said**. Every other report is **guessed at read
+time and shown as a guess**: the control on its row is dashed and its label
+carries a `?`. That distinction is the whole point of storing this. A condition
+report is what a deposit dispute turns on, and a move-out confidently labelled
+move-in by a clever rule is worse than one labelled nothing at all.
+
+The guess is one rule: **the first report for a tenant in a unit is their
+move-in, and a second one is their move-out.** A third is left generic rather
+than forced into a box. Keying on the tenant rather than the unit is what makes
+it survive a change of hands — Unit 001 has Oluwatomisin Adenekan twice a
+fortnight apart and then Alias Shearman once, and Alias's is a move-in, not the
+unit's third walkthrough.
+
+One piece of evidence that looks useful and isn't: `inspection_sign_links.fresh`
+records whether a duplicate went out blank or carrying the last walkthrough's
+answers, and reading a blank one as "a move-in for somebody new" is wrong here.
+All fifteen duplicates ever sent to a tenant went out **non-fresh**, and every
+one of them was a new tenant's move-in — Hunter Schulz into 201, Alias Shearman
+into 001, Claire Dowling into 301. It records how the form was filled in, not
+what the walkthrough was, so the guess does not consult it.
+
+Correcting one is the select on the row: pick, and it is recorded against your
+name. There is no save button because there is nothing else on the row to save,
+and no undo because the correction for a wrong answer is the right answer in the
+same control. The coverage table above comes back re-rendered from the server in
+the same response, since a kind can move a unit in or out of the "no move-out"
+count — working that out a second time in the browser is how the two views come
+to disagree. `PUT /api/inspections/:id/kind` with an empty kind drops a report
+back to being guessed.
 
 ### The filter box
 
