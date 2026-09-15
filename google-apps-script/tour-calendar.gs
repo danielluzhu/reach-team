@@ -168,28 +168,113 @@ function doPost(e) {
     var cal = targetCalendar();
     var tz = ev.timeZone || 'America/Los_Angeles';
 
-    // An eventId means the tour was edited and the event already exists.
-    if (body.eventId) {
-      var existing = null;
-      try {
-        existing = cal.getEventById(body.eventId);
-      } catch (lookupErr) {
-        existing = null;
-      }
-      if (existing) {
-        updateEvent(existing, ev, tz);
-        return reply(withMeet(cal, ev, existing, { ok: true, id: existing.getId(), updated: true }));
-      }
-      // Somebody deleted it off the calendar. Book it again rather than
-      // failing forever on an id that will never come back.
-      var replacement = createEvent(cal, ev, tz);
-      return reply(withMeet(cal, ev, replacement, { ok: true, id: replacement.getId(), recreated: true }));
+    // One booking at a time, so two posts about the same tour can't both look,
+    // both find nothing, and both create an event. The CRM gives up waiting
+    // long before this does, and a post it gave up on is exactly the one that
+    // comes back — see `bookedId`.
+    var lock = LockService.getScriptLock();
+    try {
+      lock.waitLock(45000);
+    } catch (lockErr) {
+      return reply({ error: 'another booking is still running — try again' });
     }
+    try {
+      // An id means the event already exists: the CRM has one for a tour it has
+      // booked before, and `bookedId` has one for a tour whose booking this
+      // script finished after the CRM had stopped listening.
+      var eventId = body.eventId || bookedId(ev.key);
+      if (eventId) {
+        var existing = null;
+        try {
+          existing = cal.getEventById(eventId);
+        } catch (lookupErr) {
+          existing = null;
+        }
+        if (existing) {
+          updateEvent(existing, ev, tz);
+          remember(ev.key, existing, ev);
+          return reply(withMeet(cal, ev, existing, { ok: true, id: existing.getId(), updated: true }));
+        }
+        // Somebody deleted it off the calendar. Book it again rather than
+        // failing forever on an id that will never come back.
+        var replacement = createEvent(cal, ev, tz);
+        remember(ev.key, replacement, ev);
+        return reply(withMeet(cal, ev, replacement, { ok: true, id: replacement.getId(), recreated: true }));
+      }
 
-    var event = createEvent(cal, ev, tz);
-    return reply(withMeet(cal, ev, event, { ok: true, id: event.getId() }));
+      var event = createEvent(cal, ev, tz);
+      // Before the reply, because it is the reply that gets lost.
+      remember(ev.key, event, ev);
+      return reply(withMeet(cal, ev, event, { ok: true, id: event.getId() }));
+    } finally {
+      lock.releaseLock();
+    }
   } catch (err) {
     return reply({ error: String(err && err.message ? err.message : err) });
+  }
+}
+
+/**
+ * What this script has already booked, so it never books it twice.
+ *
+ * Creating an event takes Apps Script a few seconds, and sometimes a great deal
+ * longer than that — a cold start, a slow Calendar call — while the CRM waits a
+ * fixed number of seconds for the reply and then treats the post as failed and
+ * sends it again. The event was made; only the answer was lost. Every retry
+ * made another one, and a prospect had nine identical invitations to the same
+ * tour.
+ *
+ * So the id is written down here, against the tour's own key, the moment the
+ * event exists. A post that comes back for a tour already in this list updates
+ * that event instead of booking another.
+ *
+ * Script properties are shared by every execution of the script and outlive all
+ * of them, which is what makes this work at all. They are also capped, so the
+ * list is trimmed of tours long past when it gets big.
+ */
+function bookedId(key) {
+  if (!key) return '';
+  try {
+    var stored = PropertiesService.getScriptProperties().getProperty('tour:' + key);
+    return stored ? String(stored).split('|')[0] : '';
+  } catch (err) {
+    // A booking is worth more than a perfect record of one.
+    return '';
+  }
+}
+
+function remember(key, event, ev) {
+  if (!key) return;
+  try {
+    var props = PropertiesService.getScriptProperties();
+    // The tour's day rides along so the list can be trimmed later; an id says
+    // nothing about when it was for.
+    var day = String(ev.start || ev.allDayOn || '').slice(0, 10);
+    props.setProperty('tour:' + key, event.getId() + '|' + day);
+    forgetOldTours(props);
+  } catch (err) {
+    // Same again: the event is booked, and the next post will find it by the id
+    // the CRM holds even if this didn't get written.
+  }
+}
+
+/** Tours whose day is long gone can't be posted about again. */
+var KEEP_TOURS = 400;
+var KEEP_DAYS = 120;
+
+function forgetOldTours(props) {
+  var all = props.getProperties();
+  var keys = Object.keys(all);
+  if (keys.length < KEEP_TOURS) return;
+  var cutoff = Utilities.formatDate(
+    new Date(Date.now() - KEEP_DAYS * 86400000),
+    'Etc/UTC',
+    'yyyy-MM-dd'
+  );
+  for (var i = 0; i < keys.length; i++) {
+    if (keys[i].indexOf('tour:') !== 0) continue;
+    var day = String(all[keys[i]]).split('|')[1];
+    if (day && day < cutoff) props.deleteProperty(keys[i]);
   }
 }
 

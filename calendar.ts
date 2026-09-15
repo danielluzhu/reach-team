@@ -1051,7 +1051,12 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ secret: WEBHOOK_SECRET, event, eventId: row.event_id ?? null }),
-        signal: AbortSignal.timeout(20_000),
+        // Apps Script can take the better part of a minute to answer on a cold
+        // start. Giving up at twenty seconds didn't stop it booking the tour —
+        // it only stopped us hearing which event it had booked, and the retry
+        // booked another. The script now recognises a tour it has already done
+        // (see tour-calendar.gs), and waiting longer means fewer of those.
+        signal: AbortSignal.timeout(90_000),
       });
       const text = await res.text();
       let body: any = {};
