@@ -324,6 +324,27 @@ export function streetLabel(street: string): string {
 }
 
 /**
+ * Which property a street line means, for deciding whether two rows are the
+ * same tour.
+ *
+ * The sheet writes one property a dozen ways — "2120", "2120 NE 54th St",
+ * "2120 NE 54th St, Seattle, WA 98105", "4544 20TH AVE NE" — and a key built
+ * from whatever had been typed made two spellings into two different tours. So
+ * finishing an address on a row that was already booked booked it again, and
+ * the prospect got a second invitation to the tour they were already coming to.
+ *
+ * The number, with its unit when there is one, is what tells these properties
+ * apart — it is what a title has always been reduced to, see `streetLabel` —
+ * so that is what identity is built on. Two genuinely different properties
+ * sharing a street number would collapse into one, but they would also both be
+ * reading as "2120" in everybody's calendar, which is a clash to fix in the
+ * sheet rather than one to key around.
+ */
+export function propertyIdent(street: string): string {
+  return streetLabel(street).trim().toLowerCase();
+}
+
+/**
  * The earliest hour a tour is booked at. Tours run between nine in the morning
  * and nine at night, which is what makes a time with no AM or PM readable at
  * all: 9, 10 and 11 are morning, 12 is noon, and 1 through 8 are the afternoon
@@ -500,9 +521,11 @@ export function contactLines(raw: string): string[] {
 }
 
 /**
- * A stable identity for a tour: who, where, which day. Deliberately not the
- * time — a tour moved by an hour is the same tour, and re-keying on time would
- * book a second event every time somebody nudged one.
+ * A stable identity for a tour: who, which property, which day. Deliberately
+ * not the time — a tour moved by an hour is the same tour, and re-keying on
+ * time would book a second event every time somebody nudged one. Deliberately
+ * the property rather than the street line it was typed as, for the same
+ * reason: see `propertyIdent`.
  *
  * Date is in the key even though it can be edited, because two tours by the
  * same prospect at the same property on different days are genuinely two tours
@@ -513,7 +536,11 @@ export function contactLines(raw: string): string[] {
  */
 function tourKey(name: string, street: string, date: string): string {
   return createHash("sha256")
-    .update([name, street, date].map((s) => s.toLowerCase().replace(/\s+/g, " ").trim()).join("|"))
+    .update(
+      [name, propertyIdent(street), date]
+        .map((s) => s.toLowerCase().replace(/\s+/g, " ").trim())
+        .join("|")
+    )
     .digest("hex")
     .slice(0, 32);
 }
@@ -653,6 +680,96 @@ const updateEventRow = db.prepare(
 /** Moves a queue row onto the new key when the tour's identity was edited. */
 const rekeyEvent = db.prepare(`UPDATE tour_events SET key = ? WHERE key = ?`);
 
+/**
+ * Brings rows booked under the older key onto the current one, once.
+ *
+ * `tourKey` used to be built from the street line exactly as the sheet had it,
+ * so one property written two ways was two tours — see `propertyIdent`. Leaving
+ * those rows behind would be worse than the duplicate that started this: a tour
+ * already on the sheet is skipped rather than booked (see `enqueueNewTours`),
+ * so its event would still exist and every later edit to it would quietly stop
+ * arriving.
+ *
+ * Only rows whose key provably came from their own identity are touched — a key
+ * that reproduces under neither the old rule nor the new one is something this
+ * doesn't understand, and is left exactly as it is. Which also makes running it
+ * again do nothing, so it needs no flag to say it has run.
+ *
+ * Where two rows turn out to be the same tour — the duplicate this was written
+ * for — one keeps the tour and the other is marked `duplicate` so nothing
+ * re-sends it or reads it back. Its event is *not* deleted: that is a meeting
+ * people have already accepted, so this says where it is and leaves the call to
+ * a human.
+ */
+function adoptPropertyKeys(): void {
+  const legacyKey = (name: string, street: string, date: string) =>
+    createHash("sha256")
+      .update([name, street, date].map((s) => s.toLowerCase().replace(/\s+/g, " ").trim()).join("|"))
+      .digest("hex")
+      .slice(0, 32);
+
+  const rows = db
+    .query(
+      `SELECT key, title, payload, event_url, COALESCE(sent_at, created_at) AS at
+         FROM tour_events
+        WHERE key NOT LIKE 'selftest%' AND state != 'duplicate'`
+    )
+    .all() as { key: string; title: string; payload: string; event_url: string | null; at: string }[];
+
+  // Which tour each row turns out to be about, for every row that still reads
+  // as one of the two rules wrote it.
+  const byTour = new Map<string, { key: string; title: string; event_url: string | null; at: string }[]>();
+  for (const row of rows) {
+    let identity: { name?: string; street?: string; date?: string } | undefined;
+    try {
+      identity = (JSON.parse(row.payload) as TourEvent).identity;
+    } catch {
+      continue;
+    }
+    if (!identity || typeof identity.name !== "string" || typeof identity.street !== "string") continue;
+    // A placeholder is keyed without its date, which is why it can roll from
+    // one morning to the next without booking a second event.
+    const date = identity.date || "unscheduled";
+    const want = tourKey(identity.name, identity.street, date);
+    if (want !== row.key && legacyKey(identity.name, identity.street, date) !== row.key) continue;
+    byTour.set(want, [...(byTour.get(want) ?? []), row]);
+  }
+
+  const move = db.prepare(`UPDATE tour_events SET key = ? WHERE key = ?`);
+  const supersede = db.prepare(`UPDATE tour_events SET state = 'duplicate' WHERE key = ?`);
+  db.transaction(() => {
+    for (const [want, sharing] of byTour) {
+      // The row already under the wanted key keeps it — its event is the one
+      // guests have already been invited to and answered. Failing that, the
+      // most recently sent row is the one the sheet last agreed with.
+      const order = [...sharing].sort((a, b) => (a.at < b.at ? 1 : -1));
+      const keeps = order.find((r) => r.key === want) ?? order[0]!;
+      const losers = sharing.filter((r) => r !== keeps);
+      // Nothing outside this tour should be sitting on the key, but a row this
+      // didn't recognise is left alone rather than written over.
+      const occupied = keeps.key !== want && Boolean(readEvent.get(want));
+      if (occupied) {
+        console.warn(
+          `[${new Date().toISOString()}] left "${keeps.title}" on its old key: ${want} is already taken`
+        );
+        continue;
+      }
+      if (keeps.key !== want) move.run(want, keeps.key);
+      for (const loser of losers) {
+        supersede.run(loser.key);
+        console.warn(
+          `[${new Date().toISOString()}] "${loser.title}" was booked twice — once for each way ` +
+            `its address was written. The tour now follows the event booked on ${keeps.at.slice(0, 10)}; ` +
+            `the other one is still on the calendar and wants deleting by hand` +
+            (loser.event_url ? `: ${loser.event_url}` : "")
+        );
+      }
+    }
+  })();
+}
+
+adoptPropertyKeys();
+
 type QueueRow = { key: string; payload_sig: string; state: string; event_id: string | null };
 
 /** How many of {prospect, property, date} two tours must share to be the same tour. */
@@ -686,7 +803,7 @@ function pairRekeyed(
       if (taken.has(oldKey)) continue;
       const score =
         Number(was.identity.name.toLowerCase() === now.identity.name.toLowerCase()) +
-        Number(was.identity.street.toLowerCase() === now.identity.street.toLowerCase()) +
+        Number(propertyIdent(was.identity.street) === propertyIdent(now.identity.street)) +
         Number(was.identity.date === now.identity.date);
       if (score >= REKEY_MIN_MATCHES && (!best || score > best.score)) best = { key: oldKey, score };
     }
