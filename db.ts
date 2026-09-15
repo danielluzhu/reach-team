@@ -260,7 +260,9 @@ if (hasOldInvites) {
  * save has already committed, and a failure just leaves a row to retry. And
  * `key` being the primary key is what stops a second event: the sheets API
  * saves the whole tours sheet on every edit, so the same tour is seen again on
- * every subsequent save, and `INSERT OR IGNORE` is the whole dedupe.
+ * every subsequent save, and `INSERT OR IGNORE` is the dedupe. What the key
+ * can't do on its own is stop two flushes posting the same row at once — that
+ * is the claim in `flushQueue`, and `claimed_at` below.
  *
  * `key` is derived from the tour's identity (prospect, property, date), not
  * from its row position: rows get re-sorted and inserted above one another
@@ -285,6 +287,20 @@ db.run(`
   )`);
 
 db.run(`CREATE INDEX IF NOT EXISTS idx_tour_events_state ON tour_events(state, attempts)`);
+
+/**
+ * When the row was taken to be posted.
+ *
+ * Added with the claim in `flushQueue`: a tour being sent right now is held in
+ * state 'sending', so a second flush — the retry loop overlapping a save, or
+ * the CLI running beside the server — can't post it again and book a second
+ * event. The time is what lets a row taken by a process that then died be
+ * picked up by the next one instead of being stuck for good.
+ */
+const tourEventColumns = db.query(`PRAGMA table_info(tour_events)`).all() as { name: string }[];
+if (!tourEventColumns.some((c) => c.name === "claimed_at")) {
+  db.run(`ALTER TABLE tour_events ADD COLUMN claimed_at TEXT`);
+}
 
 /**
  * Cars found parked in the driveway that shouldn't be there.

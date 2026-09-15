@@ -338,11 +338,22 @@ switch (cmd) {
   case "retry": {
     const target = args[0];
     if (!target) die("usage: calendar retry <key>|--all");
+    // Never a row that is being posted this second — see the claim in
+    // flushQueue. Putting one of those back in the queue is how a tour gets
+    // booked twice; if it really is stuck, the claim expires by itself.
     const res =
       target === "--all"
         ? db.run("UPDATE tour_events SET state='pending', attempts=0 WHERE state='failed'")
-        : db.run("UPDATE tour_events SET state='pending', attempts=0 WHERE key=?", [target]);
+        : db.run(
+            "UPDATE tour_events SET state='pending', attempts=0 WHERE key=? AND state!='sending'",
+            [target]
+          );
     console.log(`${res.changes} row${res.changes === 1 ? "" : "s"} re-queued`);
+    if (!res.changes && target !== "--all") {
+      const row = db.query("SELECT state FROM tour_events WHERE key=?").get(target) as any;
+      if (row?.state === "sending") console.log("It is being posted right now — try again in a minute.");
+      else if (!row) console.log("No row with that key.");
+    }
     await flushQueue(50);
     break;
   }

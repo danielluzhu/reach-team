@@ -670,11 +670,16 @@ const readEvent = db.prepare(`SELECT * FROM tour_events WHERE key = ?`);
  * what tells flushQueue to update the event that already exists rather than
  * book another one, and `attempts` is reset so a row that had given up gets a
  * fresh run at it.
+ *
+ * A row being posted right now keeps its claim — taking it back mid-flight is
+ * how one tour ends up with two events. `markSent` is what returns it to the
+ * queue, having seen that the details changed under it.
  */
 const updateEventRow = db.prepare(
   `UPDATE tour_events
      SET title = ?, starts_at = ?, payload = ?, payload_sig = ?,
-         state = 'pending', attempts = 0, last_error = NULL
+         state = CASE WHEN state = 'sending' THEN 'sending' ELSE 'pending' END,
+         attempts = 0, last_error = NULL
    WHERE key = ?`
 );
 /** Moves a queue row onto the new key when the tour's identity was edited. */
@@ -926,28 +931,74 @@ export function calendarConfigured(): boolean {
   return Boolean(WEBHOOK_URL && WEBHOOK_SECRET);
 }
 
+/**
+ * Takes rows to post, and records that they are taken in the same statement.
+ *
+ * Reading them with a plain SELECT left each row sitting in 'pending' for the
+ * whole round trip to Google, and more than one thing flushes this queue: every
+ * save starts one, the retry loop runs another every thirty seconds, and
+ * `bun run calendar` is a second process against the same database. Two of them
+ * overlapping both saw a tour that had no event yet and both booked it — one
+ * tour, two events, two invitations, and only one of the two ids kept, so the
+ * other could never be updated or even found again.
+ *
+ * A claim is what makes that impossible: 'sending' is nobody else's to take.
+ */
 const claimPending = db.prepare(
-  `SELECT key, payload, attempts, event_id FROM tour_events
-   WHERE state = 'pending' AND attempts < ? ORDER BY created_at LIMIT ?`
+  `UPDATE tour_events SET state = 'sending', claimed_at = ?
+    WHERE key IN (SELECT key FROM tour_events
+                   WHERE state = 'pending' AND attempts < ?
+                   ORDER BY created_at LIMIT ?)
+   RETURNING key, payload, payload_sig, attempts, event_id`
 );
 /** One named row, for a self-test that must not post anybody else's tour. */
 const claimOne = db.prepare(
-  `SELECT key, payload, attempts, event_id FROM tour_events
-   WHERE state = 'pending' AND attempts < ? AND key = ?`
+  `UPDATE tour_events SET state = 'sending', claimed_at = ?
+    WHERE state = 'pending' AND attempts < ? AND key = ?
+   RETURNING key, payload, payload_sig, attempts, event_id`
 );
+/** Says the row is still being worked on, so nothing reclaims it underneath. */
+const holdClaim = db.prepare(
+  `UPDATE tour_events SET claimed_at = ? WHERE key = ? AND state = 'sending'`
+);
+/**
+ * Hands back a row whose claim has gone stale — the process holding it died
+ * between taking it and posting it. Rare, and the alternative is a tour that
+ * sits unbooked for ever.
+ */
+const releaseAbandoned = db.prepare(
+  `UPDATE tour_events SET state = 'pending', claimed_at = NULL
+    WHERE state = 'sending' AND (claimed_at IS NULL OR claimed_at < ?)`
+);
+/**
+ * The tour is on the calendar. It goes back to pending rather than to sent if
+ * it was edited while the post was in flight: the edit still has to go out, and
+ * now that the event's id is recorded it goes out as a change to that event
+ * instead of as a second booking.
+ */
 const markSent = db.prepare(
-  `UPDATE tour_events SET state = 'sent', event_id = ?, event_url = ?,
-     sent_at = ?, attempts = attempts + 1, last_error = NULL WHERE key = ?`
+  `UPDATE tour_events SET event_id = ?, event_url = ?, sent_at = ?,
+     attempts = attempts + 1, last_error = NULL, claimed_at = NULL,
+     state = CASE WHEN payload_sig = ? THEN 'sent' ELSE 'pending' END
+   WHERE key = ?`
 );
 const markThrottled = db.prepare(
-  `UPDATE tour_events SET last_error = ? WHERE key = ?`
+  `UPDATE tour_events SET last_error = ?, state = 'pending', claimed_at = NULL WHERE key = ?`
 );
 const markFailed = db.prepare(
-  `UPDATE tour_events SET state = ?, attempts = attempts + 1, last_error = ? WHERE key = ?`
+  `UPDATE tour_events SET state = ?, attempts = attempts + 1, last_error = ?,
+     claimed_at = NULL WHERE key = ?`
 );
 
 /** Give up after this many tries and leave the row for a human to look at. */
 const MAX_ATTEMPTS = 6;
+
+/**
+ * How long a claim is good for. A post gives up at twenty seconds and the claim
+ * is renewed immediately before each one, so a row still held after five
+ * minutes is held by nothing at all.
+ */
+const CLAIM_GOOD_FOR_MS = 5 * 60_000;
 
 /**
  * A pause between posts.
@@ -973,9 +1024,14 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
   if (!calendarConfigured()) return;
-  const pending = (onlyKey ? claimOne.all(MAX_ATTEMPTS, onlyKey) : claimPending.all(MAX_ATTEMPTS, limit)) as {
+  releaseAbandoned.run(new Date(Date.now() - CLAIM_GOOD_FOR_MS).toISOString());
+  const taken = new Date().toISOString();
+  const pending = (
+    onlyKey ? claimOne.all(taken, MAX_ATTEMPTS, onlyKey) : claimPending.all(taken, MAX_ATTEMPTS, limit)
+  ) as {
     key: string;
     payload: string;
+    payload_sig: string;
     attempts: number;
     event_id: string | null;
   }[];
@@ -984,6 +1040,9 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
   for (const row of pending) {
     if (!first) await pause(BETWEEN_POSTS_MS);
     first = false;
+    // Claimed as a batch, posted one at a time: the rows at the back of a long
+    // queue would otherwise look abandoned before their turn came round.
+    holdClaim.run(new Date().toISOString(), row.key);
     const event = JSON.parse(row.payload) as TourEvent;
     // An id means the event is already on the calendar and this is an edit.
     const updating = Boolean(row.event_id);
@@ -1008,7 +1067,13 @@ export async function flushQueue(limit = 10, onlyKey?: string): Promise<void> {
       }
       if (!res.ok || !body.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
 
-      markSent.run(body.id ?? row.event_id, body.url ?? null, new Date().toISOString(), row.key);
+      markSent.run(
+        body.id ?? row.event_id,
+        body.url ?? null,
+        new Date().toISOString(),
+        row.payload_sig,
+        row.key
+      );
       console.log(
         `[${new Date().toISOString()}] calendar event ` +
           `${updating ? (body.recreated ? "re-created (it had been deleted)" : "updated") : "created"}: ` +
@@ -1066,7 +1131,7 @@ export function startCalendarWorker() {
     return;
   }
   const stuck = db
-    .query(`SELECT COUNT(*) AS n FROM tour_events WHERE state = 'pending'`)
+    .query(`SELECT COUNT(*) AS n FROM tour_events WHERE state IN ('pending', 'sending')`)
     .get() as { n: number };
   console.log(
     `Calendar events: on, inviting ${STANDING_GUESTS.join(", ")} plus the tour guide` +
