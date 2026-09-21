@@ -15,6 +15,7 @@ export type RoomKind =
   | "kitchen"
   | "hallway"
   | "exterior"
+  | "keys"
   | "furnishings"
   | "other";
 
@@ -55,6 +56,16 @@ export const ROOM_TEMPLATES: Record<RoomKind, { label: string; items: string[] }
       "Fencing & gates", "Roof & gutters", "Exterior lighting", "Bins & recycling area",
     ],
   },
+  // Not a room, but every walkthrough has to record what was handed over (or
+  // back): a deposit dispute over a missing key is settled by this section.
+  // The number of each goes in the item's note.
+  keys: {
+    label: "Keys",
+    items: [
+      "Front door keys", "Unit / room keys", "Mailbox keys", "Building fobs / access cards",
+      "Garage remotes", "Other keys",
+    ],
+  },
   // What's in it depends on which rooms the property has, so this template
   // carries no fixed list — see furnishingItems below.
   furnishings: {
@@ -88,7 +99,7 @@ export function furnishingItems(rooms: { kind: RoomKind; name: string }[]): stri
 
 /**
  * The rooms a checklist starts with: one per bedroom and bathroom asked for,
- * plus the four every unit has. Bedrooms and bathrooms are numbered only when
+ * plus the four every unit has and the keys. Bedrooms and bathrooms are numbered only when
  * there's more than one — "Bedroom" reads better than "Bedroom 1" in a studio.
  */
 export function defaultRooms(bedrooms: number, bathrooms: number, furnished = false) {
@@ -102,6 +113,7 @@ export function defaultRooms(bedrooms: number, bathrooms: number, furnished = fa
   add("kitchen", "Kitchen");
   add("hallway", "Hallway");
   add("exterior", "Exterior premises");
+  add("keys", "Keys");
 
   if (furnished) {
     // Last, as its own section — and only when there is something in it. A

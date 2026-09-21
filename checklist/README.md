@@ -235,8 +235,9 @@ after that file changes.
 
 Rooms come from `rooms.ts`: one template per kind, so a kitchen is asked about
 its dishwasher and a bedroom about its closet. Every checklist starts with a
-room per bedroom and bathroom, plus living room, kitchen, hallway and exterior
-premises. They're a starting point only — the submission carries whatever the
+room per bedroom and bathroom, plus living room, kitchen, hallway, exterior
+premises and **Keys** — front door, unit, mailbox, fobs, garage remotes — each
+asking how many were handed over, with the room note for who holds them. They're a starting point only — the submission carries whatever the
 tenant ended up with, which is what the PDF prints.
 
 **Furnished** adds a Furnishings section, last, built from the rooms the

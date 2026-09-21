@@ -288,7 +288,7 @@
         <output id="out-bathrooms" aria-live="polite">1</output>
         <button type="button" data-step="bathrooms" data-by="1" aria-label="One more bathroom">+</button>
       </div>
-      <p class="sub" style="margin:14px 0 0">Living room, kitchen, hallway and exterior premises are added automatically.</p>
+      <p class="sub" style="margin:14px 0 0">Living room, kitchen, hallway, exterior premises and keys are added automatically.</p>
 
       <label class="check" for="furnished" style="margin-top:14px">
         <input type="checkbox" id="furnished" />
@@ -1041,6 +1041,7 @@ function roomNoteHint(room) {
   if (room.kind === "bedroom") return "Which bedroom? e.g. small one facing the street";
   if (room.kind === "bathroom") return "Which bathroom? e.g. en-suite off Bedroom 1";
   if (room.kind === "furnishings") return "Anything about the furniture as a whole";
+  if (room.kind === "keys") return "Who holds the keys? e.g. 2 sets given to tenant, spare with office";
   return "About this room (optional)";
 }
 
@@ -1083,7 +1084,8 @@ function renderRooms() {
                   'aria-pressed="' + (item.condition === c ? "true" : "false") + '">' + c + '</button>';
               }).join("") +
             '</div>' +
-            '<textarea data-note="' + ri + ',' + ii + '" rows="1" placeholder="Notes (optional)">' +
+            '<textarea data-note="' + ri + ',' + ii + '" rows="1" placeholder="' +
+              (room.kind === "keys" ? "How many? e.g. 2" : "Notes (optional)") + '">' +
               esc(item.notes) + '</textarea>' +
           '</div>';
         }).join("") +
