@@ -1482,6 +1482,10 @@ export const PAGE_CSS = `
     .sign-link.form { border-left: 2px solid #c4b5fd; padding-left: 0.6rem; }`;
 
 const LIST_CSS = `
+    /* The filter hides a row with the hidden attribute, and the phone layout
+       below makes every row display: block — which beats the browser's own
+       rule for hidden, so on a phone nothing the filter hid went away. */
+    [hidden] { display: none !important; }
     .toolbar { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; margin: 0 0 0.9rem; }
     .toolbar input { flex: 1 1 16rem; max-width: 26rem; padding: 0.45rem 0.7rem; border: 1px solid #d1d5db;
       border-radius: 6px; font: inherit; font-size: 0.88rem; background: #fff; }
