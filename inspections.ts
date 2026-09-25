@@ -1169,10 +1169,25 @@ function inspectionKinds(inspections: Inspection[]): Map<string, KindVerdict> {
     if (isKind(row.kind)) stored.set(row.checklist_id, { kind: row.kind, setByName: row.set_by_name });
   }
 
+  // A report typed without its unit — "5643 Brooklyn Ave NE" beside Nina
+  // Chenu's "5643 Brooklyn Ave NE, Upper Unit" — belongs to the one unit that
+  // tenant has in that building. With two of them to choose from it stays on
+  // its own, rather than being pinned to either.
+  const person = (i: Inspection) =>
+    `${buildingKey(String(i.checklist.address ?? "").split(",")[0])}|${flatten(i.checklist.name)}`;
+  const unitsOf = new Map<string, Set<string>>();
+  for (const i of inspections) {
+    const unit = addressUnit(i.checklist.address);
+    if (!unit) continue;
+    unitsOf.set(person(i), (unitsOf.get(person(i)) ?? new Set()).add(unit));
+  }
+
   // Oldest first inside each tenancy, so "the first one" means the first one.
   const byTenancy = new Map<string, Inspection[]>();
   for (const i of inspections) {
-    const key = `${inspectionUnitKey(i.checklist.address)}|${flatten(i.checklist.name)}`;
+    const units = unitsOf.get(person(i));
+    const unit = addressUnit(i.checklist.address) || (units?.size === 1 ? [...units][0] : "");
+    const key = `${person(i)}|${unit}`;
     byTenancy.set(key, [...(byTenancy.get(key) ?? []), i]);
   }
   const ordinal = new Map<string, number>();
