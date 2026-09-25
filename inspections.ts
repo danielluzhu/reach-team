@@ -2904,6 +2904,113 @@ function tenantsOfRecord(index: LeaseIndex, address: string): string[] {
 }
 
 /**
+ * The cells of a Leases row that say whose tenancy it is. A row's inspections
+ * are filed under these, JSON-encoded, and the sheet page looks them up the
+ * same way — so sorting the sheet can't hand one tenant another's reports, and
+ * a row edited since the page loaded simply shows none until the next load.
+ */
+export const LEASE_KEY_COLUMNS = ["Address", "Unit", "Tenant", "Email", "Start", "End"];
+
+export type LeaseInspection = { id: string; kind: string; when: string };
+
+/** Slack either side of a lease: a move-out is walked the day after it ends. */
+const LEASE_SLACK_DAYS = 45;
+const DAY_MS = 86_400_000;
+
+const nameTokens = (value: unknown) => flatten(value).split(" ").filter(Boolean);
+
+/**
+ * Every Leases row, with the walkthroughs that were that tenancy's.
+ *
+ * A report belongs to a lease when it was walked at that unit — or the house,
+ * where neither says a unit — by that tenant, by name or by email, during the
+ * lease or within a few weeks of it. Ada's lease at 12 Example Ave NE ending
+ * 2026-08-30 gets the move-out walked there on 2026-08-31, the day after.
+ *
+ * A tenant who renews has two rows that both reach a walkthrough between them,
+ * so each report goes to the one lease its date is nearest, never to both.
+ */
+export function leaseInspections(): Record<string, LeaseInspection[]> {
+  const out: Record<string, LeaseInspection[]> = {};
+  const inspections = listInspections();
+  if (!inspections) return out;
+  let columns: string[];
+  let rows: string[][];
+  try {
+    const sheet = db.query(`SELECT columns, rows FROM sheets WHERE id = 'leases'`).get() as
+      | { columns: string; rows: string }
+      | undefined;
+    if (!sheet) return out;
+    columns = (JSON.parse(sheet.columns) as { name: string }[]).map((c) => c.name);
+    rows = JSON.parse(sheet.rows) as string[][];
+  } catch (err) {
+    console.warn("Could not read the Leases sheet to link its inspections.", err);
+    return out;
+  }
+  const at = (row: string[], name: string) => {
+    const i = columns.indexOf(name);
+    return i === -1 ? "" : String(row[i] ?? "");
+  };
+  const day = (value: string) => {
+    const t = /^\d{4}-\d{2}-\d{2}$/.test(value.trim()) ? Date.parse(`${value.trim()}T00:00:00Z`) : NaN;
+    return Number.isNaN(t) ? null : t;
+  };
+
+  const leases = rows
+    .map((row) => {
+      const start = day(at(row, "Start"));
+      const end = day(at(row, "End"));
+      return {
+        key: JSON.stringify(LEASE_KEY_COLUMNS.map((name) => at(row, name))),
+        building: buildingKey(at(row, "Address")),
+        unit: unitKey(at(row, "Unit")),
+        names: nameTokens(at(row, "Tenant")),
+        email: at(row, "Email").trim().toLowerCase(),
+        from: start === null ? -Infinity : start - LEASE_SLACK_DAYS * DAY_MS,
+        to: end === null ? Infinity : end + LEASE_SLACK_DAYS * DAY_MS,
+        start: start ?? end ?? 0,
+        end: end ?? start ?? 0,
+      };
+    })
+    .filter((l) => l.building && (l.names.length || l.email));
+
+  const kinds = inspectionKinds(inspections);
+  for (const i of inspections) {
+    const c = i.checklist;
+    const when = Date.parse(i.createdAt);
+    if (Number.isNaN(when)) continue;
+    const building = buildingKey(String(c.address ?? "").split(",")[0]);
+    const unit = addressUnit(c.address);
+    const names = nameTokens(c.name);
+    const email = String(c.email ?? "").trim().toLowerCase();
+
+    let best: { key: string; distance: number } | null = null;
+    for (const l of leases) {
+      if (l.building !== building) continue;
+      if (l.unit && unit && l.unit !== unit) continue;
+      if (when < l.from || when > l.to) continue;
+      // Whichever name is shorter is all there in the other: "Wagner" signed
+      // for Wagner Schorr-Ratzlaff IV, and a lease can carry two tenants.
+      const [few, many] = names.length <= l.names.length ? [names, l.names] : [l.names, names];
+      const sameName = few.length > 0 && few.every((t) => many.includes(t));
+      if (!sameName && !(email && email === l.email)) continue;
+      const distance = when < l.start ? l.start - when : when > l.end ? when - l.end : 0;
+      if (!best || distance < best.distance) best = { key: l.key, distance };
+    }
+    if (!best) continue;
+    const verdict = kinds.get(i.id);
+    (out[best.key] ??= []).push({
+      id: i.id,
+      kind: verdict ? `${KIND_LABELS[verdict.kind]}${verdict.guessed ? "?" : ""}` : "Walkthrough",
+      when: signedDate(i.createdAt),
+    });
+  }
+  // Oldest first, so a row reads move-in then move-out.
+  for (const list of Object.values(out)) list.reverse();
+  return out;
+}
+
+/**
  * The kind control on a row: what this report was, and one click to correct it.
  *
  * A `<select>` rather than a pill with a menu behind it, because the whole

@@ -36,6 +36,7 @@ import {
   inspectionCoverage,
   inspectionSignLinks,
   isChecklistPath,
+  leaseInspections,
   proxyChecklistApp,
   renderInspection,
   renderInspectionsList,
@@ -1386,6 +1387,11 @@ function loadSheets() {
       rows: JSON.parse(s.rows),
       rev: s.rev,
     })),
+    // The walkthroughs each Leases row links to, keyed by that row's tenancy
+    // cells (see leaseInspections). Worked out on every load rather than kept
+    // in the sheet: the reports live in the checklist app, and a copy stored
+    // here would go stale the moment another was signed.
+    leaseInspections: leaseInspections(),
   };
 }
 

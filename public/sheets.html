@@ -225,6 +225,18 @@
   .chip.tag-3 { background: #dbeedb; color: #005100; }
   .chip.tag-4 { background: #e6e3f3; color: #342975; }
 
+  /* ---- a lease's walkthroughs ----
+     Not a column of the sheet: nothing here is typed, and nothing is saved.
+     The server works out which signed reports were each tenancy's, and they
+     sit after the last real column as links to the reports themselves. */
+  th.links-col { padding-right: 6px; color: #6b7280; }
+  td.links { background: #fcfcfd; }
+  td.links .cv { display: flex; gap: 0.3rem; overflow: hidden; }
+  body.wrap td.links .cv { flex-wrap: wrap; display: flex; }
+  a.chip.insp { background: #e1ecf9; color: #18467c; text-decoration: none; flex: none; }
+  a.chip.insp.out { background: #dbeedb; color: #005100; }
+  a.chip.insp:hover { text-decoration: underline; }
+
   /* Named colours, for a column where particular values were asked for by
      colour (`tagValues`) rather than handed one from the palette above. These
      are solid rather than tinted: the colour was named literally, and a column
@@ -1121,9 +1133,17 @@ async function refreshIfIdle() {
   try {
     const res = await fetch("/api/sheets", { headers: { "Cache-Control": "no-cache" } });
     if (!res.ok) return;
-    const fresh = (await res.json()).sheets.find((x) => x.id === sheet().id);
-    if (!fresh || fresh.rev === revs[sheet().id]) return;
+    const body = await res.json();
+    const fresh = body.sheets.find((x) => x.id === sheet().id);
     if (conflict || saving || dirty || editing) return;   // it may have changed while we waited
+    // A report signed since this page loaded shows up on its lease even when
+    // nobody has touched the sheet.
+    const linksMoved = JSON.stringify(body.leaseInspections) !== JSON.stringify(doc.leaseInspections);
+    doc.leaseInspections = body.leaseInspections;
+    if (!fresh || fresh.rev === revs[sheet().id]) {
+      if (linksMoved && showsInspections()) redraw();
+      return;
+    }
     doc.sheets[si] = fresh;
     revs[fresh.id] = fresh.rev;
     redraw();
@@ -1134,6 +1154,29 @@ async function refreshIfIdle() {
 addEventListener("visibilitychange", refreshIfIdle);
 addEventListener("focus", refreshIfIdle);
 
+/* ---------------- a lease's walkthroughs ---------------- */
+
+/** The same cells, in the same order, as LEASE_KEY_COLUMNS in inspections.ts. */
+const LEASE_KEY_COLUMNS = ["Address", "Unit", "Tenant", "Email", "Start", "End"];
+const showsInspections = () => sheet().id === "leases" && !!doc.leaseInspections;
+
+/** The signed reports for one row, looked up by whose tenancy it is. */
+function rowInspections(row, cols) {
+  const key = JSON.stringify(LEASE_KEY_COLUMNS.map((name) => {
+    const i = cols.findIndex((c) => c.name === name);
+    return i === -1 ? "" : String(row[i] ?? "");
+  }));
+  return doc.leaseInspections[key] || [];
+}
+
+function inspectionLinks(row, cols) {
+  return rowInspections(row, cols)
+    .map((i) => `<a class="chip insp${/^Move-out/.test(i.kind) ? " out" : ""}"
+      href="/inspections/${attr(i.id)}" target="_blank" rel="noopener"
+      title="${attr(i.kind.replace("?", " (guessed)"))} walkthrough, signed ${attr(i.when)}">${esc(i.kind)} · ${esc(i.when.replace(/, \d{4}$/, ""))}</a>`)
+    .join("");
+}
+
 /* ---------------- rendering ---------------- */
 
 function render() {
@@ -1143,6 +1186,8 @@ function render() {
   const narrow = isNarrow();
   let html = `<colgroup><col style='width:${narrow ? 34 : 46}px'>`;
   cols.forEach((c, i) => { html += `<col style="width:${colWidth(c, narrow, i)}px">`; });
+  const links = showsInspections();
+  if (links) html += `<col style="width:${narrow ? NARROW_MIN_WIDTH : 200}px">`;
   html += "</colgroup><thead><tr><th class='rownum corner'></th>";
   cols.forEach((c, i) => {
     const dir = c.sort;
@@ -1152,6 +1197,9 @@ function render() {
       <span class="sort${dir ? " on" : ""}" data-sort="${i}">${dir === "desc" ? "▼" : "▲"}</span>
       <span class="resizer" data-resize="${i}"></span></th>`;
   });
+  if (links) {
+    html += `<th class="links-col" title="The signed walkthroughs for this tenant at this unit, during their lease — worked out, not typed">Inspections</th>`;
+  }
   html += "</tr></thead><tbody>";
 
   const rows = s.rows;
@@ -1175,10 +1223,11 @@ function render() {
       const cls = classes.length ? ` class="${classes.join(" ")}"` : "";
       html += `<td data-vr="${vr}" data-c="${c}"${cls}${tip}><div class="cv">${tagHtml(shown, raw, c)}</div></td>`;
     }
+    if (links) html += `<td class="links"><div class="cv">${inspectionLinks(rows[r], cols)}</div></td>`;
     html += "</tr>";
   }
   if (!visible.length) {
-    html += `<tr><td class="rownum"></td><td colspan="${cols.length}" style="color:#80868b">
+    html += `<tr><td class="rownum"></td><td colspan="${cols.length + (links ? 1 : 0)}" style="color:#80868b">
       ${query ? "No rows match “" + esc(query) + "”" : "No rows yet — click “+ Row”."}</td></tr>`;
   }
   html += "</tbody>";
