@@ -110,13 +110,35 @@ function navLinks(): [string, string][] {
   ];
 }
 
+/**
+ * Tabs that sit behind the "More" disclosure instead of in the bar itself.
+ * These are read occasionally rather than worked in daily, so they stay folded
+ * away until asked for. Keyed by href — the same stable key `active` is matched
+ * on, so renaming the Vendors sheet doesn't spill it back into the bar.
+ */
+const COLLAPSED_NAV_HREFS = new Set(["/sheets/vendors", "/plates", "/workflow"]);
+
+function navLinkHtml([href, label]: [string, string], active: string): string {
+  return `<a href="${href}"${href === active ? ' class="active"' : ""}>${escapeHtml(label)}</a>`;
+}
+
 function navLinksHtml(active: string): string {
-  return navLinks()
-    .map(
-      ([href, label]) =>
-        `<a href="${href}"${href === active ? ' class="active"' : ""}>${escapeHtml(label)}</a>`
-    )
-    .join("");
+  const links = navLinks();
+  const inBar = links.filter(([href]) => !COLLAPSED_NAV_HREFS.has(href));
+  const folded = links.filter(([href]) => COLLAPSED_NAV_HREFS.has(href));
+  const bar = inBar.map((link) => navLinkHtml(link, active)).join("");
+  if (!folded.length) return bar;
+
+  // Open on arrival when the page being shown is one of the folded ones, so
+  // nobody is left on a page whose tab they can't see.
+  const holdsActive = folded.some(([href]) => href === active);
+  return (
+    bar +
+    `<details class="app-more"${holdsActive ? " open" : ""}>` +
+    `<summary${holdsActive ? ' class="active"' : ""}>More</summary>` +
+    `<span class="app-more-links">${folded.map((link) => navLinkHtml(link, active)).join("")}</span>` +
+    `</details>`
+  );
 }
 
 function navUserHtml(user: User): string {
@@ -145,7 +167,18 @@ const NAV_CSS = `
     .app-nav .app-user form { margin: 0; }
     .app-nav .app-user button { background: none; border: 0; padding: 0; cursor: pointer;
       color: #94a3b8; font: inherit; text-decoration: underline; }
-    .app-nav .app-user button:hover { color: #fff; }`;
+    .app-nav .app-user button:hover { color: #fff; }
+    /* The folded tabs expand inline rather than dropping down: the bar is a
+       scrolling flex row, which would clip a floating panel. */
+    .app-nav details.app-more { display: flex; align-items: center; gap: 1.25rem; }
+    .app-nav .app-more summary { color: #cbd5e1; cursor: pointer; list-style: none; white-space: nowrap;
+      padding-bottom: 2px; border-bottom: 2px solid transparent; }
+    .app-nav .app-more summary::-webkit-details-marker { display: none; }
+    .app-nav .app-more summary::after { content: "›"; display: inline-block; margin-left: 0.3rem; }
+    .app-nav .app-more[open] summary::after { transform: rotate(90deg); }
+    .app-nav .app-more summary:hover { color: #fff; }
+    .app-nav .app-more summary.active { color: #fff; border-bottom-color: #60a5fa; }
+    .app-nav .app-more-links { display: flex; align-items: center; gap: 1.25rem; }`;
 
 function escapeHtml(value: unknown): string {
   if (value === null || value === undefined) return "";
