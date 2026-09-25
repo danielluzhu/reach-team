@@ -304,6 +304,9 @@
   <button id="add-row">+ Row</button>
   <button id="add-col">+ Column</button>
   <label class="wrap"><input type="checkbox" id="wrap" checked /> Wrap text</label>
+  <label class="wrap" id="past-toggle" hidden
+    title="Rows whose lease has already ended. Only hidden from view: they are still in the sheet, still searchable once shown, and still in the CSV.">
+    <input type="checkbox" id="hide-past" /> Hide past tenants <span id="past-count"></span></label>
   <span class="spacer"></span>
   <button id="undo" title="Ctrl+Z">Undo</button>
   <button id="redo" title="Ctrl+Shift+Z">Redo</button>
@@ -887,10 +890,36 @@ function paintCell(td, value, col, c) {
 function computeVisible() {
   const rows = sheet().rows;
   const q = query.trim().toLowerCase();
+  const pair = hidesPast() ? termPair(sheet().columns) : null;
   visible = [];
   for (let i = 0; i < rows.length; i++) {
+    if (pair && termClass(rows[i], pair) === "term-past") continue;
     if (!q || rows[i].some((v) => String(v).toLowerCase().includes(q))) visible.push(i);
   }
+}
+
+/* ---------------- past tenants ----------------
+   A sheet with a lease term can put the rows whose term has ended out of the
+   way, with one click to bring them back. Remembered per sheet and per
+   browser: it is how this person likes to read Leases, not a fact about it. */
+
+const pastKey = () => `crm.sheets.hidePast.${sheet().id}`;
+const hidePast = {};                         // the choice, kept here too in case storage throws
+function hidesPast() {
+  if (!(pastKey() in hidePast)) {
+    try { hidePast[pastKey()] = localStorage.getItem(pastKey()) === "1"; } catch { hidePast[pastKey()] = false; }
+  }
+  return hidePast[pastKey()];
+}
+
+/** Shown only on a sheet that has a term, with how many rows have ended. */
+function refreshPastToggle() {
+  const pair = termPair(sheet().columns);
+  $("past-toggle").hidden = !pair;
+  if (!pair) return;
+  const ended = sheet().rows.filter((r) => termClass(r, pair) === "term-past").length;
+  $("hide-past").checked = hidesPast();
+  $("past-count").textContent = `(${ended})`;
 }
 
 function snapshot() {
@@ -1228,7 +1257,9 @@ function render() {
   }
   if (!visible.length) {
     html += `<tr><td class="rownum"></td><td colspan="${cols.length + (links ? 1 : 0)}" style="color:#80868b">
-      ${query ? "No rows match “" + esc(query) + "”" : "No rows yet — click “+ Row”."}</td></tr>`;
+      ${query ? "No rows match “" + esc(query) + "”"
+        : rows.length ? "Every row here is a past tenant — untick “Hide past tenants” to see them."
+        : "No rows yet — click “+ Row”."}</td></tr>`;
   }
   html += "</tbody>";
   gridEl.innerHTML = html;
@@ -1241,9 +1272,10 @@ function render() {
     })
     .join("");
 
-  $("rowcount").textContent = query
+  $("rowcount").textContent = query || visible.length !== rows.length
     ? `${visible.length} of ${rows.length} rows`
     : `${rows.length} rows`;
+  refreshPastToggle();
   $("undo").disabled = !undoStack.length;
   $("redo").disabled = !redoStack.length;
   paintSelection();
@@ -2249,6 +2281,12 @@ applyWrap(wrapPref);
 $("wrap").onchange = (e) => {
   applyWrap(e.target.checked);
   try { localStorage.setItem(WRAP_KEY, e.target.checked ? "1" : "0"); } catch {}
+};
+
+$("hide-past").onchange = (e) => {
+  hidePast[pastKey()] = e.target.checked;
+  try { localStorage.setItem(pastKey(), e.target.checked ? "1" : "0"); } catch {}
+  redraw();
 };
 
 /**
