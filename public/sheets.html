@@ -302,6 +302,8 @@
   <input id="search" type="search" placeholder="Search this sheet" autocomplete="off" />
   <span class="rowcount" id="rowcount"></span>
   <button id="add-row">+ Row</button>
+  <button id="add-vacant" hidden
+    title="Adds a blank row, address and unit filled in, for every unit with no lease running or signed for later — ready for the next one to be typed in">+ Vacant units</button>
   <button id="add-col">+ Column</button>
   <label class="wrap"><input type="checkbox" id="wrap" checked /> Wrap text</label>
   <label class="wrap" id="past-toggle" hidden
@@ -1276,6 +1278,7 @@ function render() {
     ? `${visible.length} of ${rows.length} rows`
     : `${rows.length} rows`;
   refreshPastToggle();
+  $("add-vacant").hidden = sheet().id !== "leases";
   $("undo").disabled = !undoStack.length;
   $("redo").disabled = !redoStack.length;
   paintSelection();
@@ -2281,6 +2284,42 @@ applyWrap(wrapPref);
 $("wrap").onchange = (e) => {
   applyWrap(e.target.checked);
   try { localStorage.setItem(WRAP_KEY, e.target.checked ? "1" : "0"); } catch {}
+};
+
+/* ---------------- vacant units ----------------
+   Leases only. The server knows every unit (the sheet's, the Home page's and
+   the tour addresses) and says which have no lease now or to come; the rows
+   are added here, as one edit, so Undo takes them back out. */
+
+$("add-vacant").onclick = async () => {
+  const btn = $("add-vacant");
+  commitEdit();
+  btn.disabled = true;
+  try {
+    const s = sheet();
+    const res = await fetch("/api/leases/vacant-rows", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ columns: s.columns, rows: s.rows }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { rows } = await res.json();
+    if (!rows.length) {
+      setStatus("Every unit already has a lease, or a row waiting for one", "saved");
+      return;
+    }
+    snapshot();
+    s.rows.push(...rows);
+    afterChange();
+    setStatus(`Added ${rows.length} vacant unit${rows.length === 1 ? "" : "s"} at the bottom — fill in the new lease`, "saved");
+    // Straight to where the new tenant's name goes, unless a search hides it.
+    const vr = visible.indexOf(s.rows.length - rows.length);
+    if (vr !== -1) moveTo(vr, Math.max(0, s.columns.findIndex((c) => c.name === "Tenant")), false);
+  } catch (err) {
+    setStatus(`Could not work out the vacant units (${err.message || err})`, "error");
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 $("hide-past").onchange = (e) => {

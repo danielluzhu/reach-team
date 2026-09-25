@@ -3014,6 +3014,77 @@ export function leaseInspections(): Record<string, LeaseInspection[]> {
 }
 
 /**
+ * A blank Leases row for every unit that has no lease running or to come, so
+ * the next one has somewhere to be typed.
+ *
+ * The units are every one the office knows of: the ones already on the sheet,
+ * the ones on the Home page (with their door codes), and the properties the
+ * calendar books tours at. A unit counts as covered by any row whose End is
+ * blank or not yet past — a lease still running, one signed for later, or a
+ * blank row somebody has already started — so asking twice adds nothing.
+ *
+ * Only rows are returned; the page adds them itself, so they are one edit it
+ * can undo and are saved like any other.
+ */
+export function vacantLeaseRows(columns: { name: string }[], rows: unknown[][]): string[][] {
+  const names = columns.map((c) => c?.name);
+  const col = (name: string) => names.indexOf(name);
+  const [address, unit, code, end] = ["Address", "Unit", "Code", "End"].map(col);
+  if (address === -1) return [];
+  const cell = (row: unknown[], i: number) => (i === -1 ? "" : String(row[i] ?? "").trim());
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+
+  // Keyed by building and unit; first spelling seen wins, the sheet's own first.
+  const known = new Map<string, { building: string; address: string; unit: string; code: string }>();
+  const note = (addr: string, u: string, doorCode = "") => {
+    const building = buildingKey(addr);
+    if (!building) return;
+    const key = `${building}|${unitKey(u)}`;
+    const seen = known.get(key);
+    if (!seen) known.set(key, { building, address: addr.trim(), unit: u.trim(), code: doorCode });
+    else if (!seen.code && doorCode) seen.code = doorCode;
+  };
+  const covered = new Set<string>();
+  for (const row of rows) {
+    note(cell(row, address), cell(row, unit));
+    const ends = cell(row, end);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(ends) || ends >= today) {
+      covered.add(`${buildingKey(cell(row, address))}|${unitKey(cell(row, unit))}`);
+    }
+  }
+  try {
+    for (const t of db
+      .query(`SELECT property_address, unit, access_code FROM tenants WHERE property_address != ''`)
+      .all() as { property_address: string; unit: string | null; access_code: string | null }[]) {
+      note(t.property_address, t.unit ?? "", t.access_code ?? "");
+    }
+    const setting = db.query(`SELECT value FROM settings WHERE key = 'property_addresses'`).get() as
+      | { value: string }
+      | undefined;
+    for (const full of Object.values(JSON.parse(setting?.value ?? "{}") as Record<string, string>)) {
+      note(String(full).split(",")[0], "");
+    }
+  } catch (err) {
+    console.warn("Could not read every unit for the Leases sheet; using the ones on it.", err);
+  }
+
+  // A building known unit by unit doesn't also get a row for the whole of it.
+  const hasUnits = new Set([...known.values()].filter((u) => unitKey(u.unit)).map((u) => u.building));
+  const out: string[][] = [];
+  const collator = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+  for (const [key, u] of [...known].sort((a, b) => collator.compare(a[0], b[0]))) {
+    if (covered.has(key)) continue;
+    if (!unitKey(u.unit) && hasUnits.has(u.building)) continue;
+    const row = names.map(() => "");
+    row[address] = u.address;
+    if (unit !== -1) row[unit] = u.unit;
+    if (code !== -1) row[code] = u.code;
+    out.push(row);
+  }
+  return out;
+}
+
+/**
  * The kind control on a row: what this report was, and one click to correct it.
  *
  * A `<select>` rather than a pill with a menu behind it, because the whole

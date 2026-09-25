@@ -37,6 +37,7 @@ import {
   inspectionSignLinks,
   isChecklistPath,
   leaseInspections,
+  vacantLeaseRows,
   proxyChecklistApp,
   renderInspection,
   renderInspectionsList,
@@ -2251,6 +2252,22 @@ const server = Bun.serve({
       if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
       deleteReport(Number(plateDelete[1]), user.username);
       return new Response(null, { status: 303, headers: { Location: "/plates" } });
+    }
+    /**
+     * The blank Leases rows the page should add: one per unit with no lease
+     * running or to come. Worked out against the rows the page has now, which
+     * may be ahead of what is saved, and written by nobody but the page.
+     */
+    if (url.pathname === "/api/leases/vacant-rows") {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      const body = (await req.json().catch(() => null)) as { columns?: unknown; rows?: unknown } | null;
+      if (!Array.isArray(body?.columns) || !Array.isArray(body?.rows) || !body.rows.every(Array.isArray)) {
+        return Response.json({ error: "expected { columns, rows }" }, { status: 400 });
+      }
+      return Response.json(
+        { rows: vacantLeaseRows(body.columns as { name: string }[], body.rows as unknown[][]) },
+        { headers: { "Cache-Control": "no-store, private" } }
+      );
     }
     if (url.pathname === "/api/sheets") {
       if (req.method === "GET") {
