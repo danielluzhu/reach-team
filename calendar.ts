@@ -1634,3 +1634,116 @@ export async function fetchAgenda(
   if (!body.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
   return { calendar: body.calendar ?? "", events: body.events ?? [] };
 }
+
+/* ------------------------------------------------------ events by hand */
+
+/**
+ * The office account's own deployment of tour-calendar.gs.
+ *
+ * Tours are booked through CALENDAR_WEBHOOK_URL, which runs as whoever pressed
+ * Deploy on it — a person, not the office. An event somebody makes by hand on
+ * the Calendar page is the office's, so it goes through a second deployment of
+ * the same script made while signed in as the office account: Apps Script
+ * creates as the account that deployed it, and there is no way to ask one
+ * deployment to act as anybody else.
+ *
+ * CALENDAR_OFFICE_ACCOUNT is only what the page says it creates as. It is not
+ * checked against Google — the deployment decides that, which is why it has
+ * to be made from that account.
+ */
+const OFFICE_WEBHOOK_URL = process.env.CALENDAR_OFFICE_WEBHOOK_URL ?? "";
+const OFFICE_WEBHOOK_SECRET = process.env.CALENDAR_OFFICE_WEBHOOK_SECRET ?? "";
+export const OFFICE_ACCOUNT = process.env.CALENDAR_OFFICE_ACCOUNT ?? "";
+
+export const officeCalendarConfigured = () => Boolean(OFFICE_WEBHOOK_URL && OFFICE_WEBHOOK_SECRET);
+
+export type NewEvent = {
+  title: string;
+  date: string;
+  /** "HH:mm", both absent for an all-day event. */
+  startTime?: string;
+  endTime?: string;
+  location: string;
+  description: string;
+  guests: string[];
+};
+
+const EMAIL = /^[^\s@,<>]+@[^\s@,<>]+\.[^\s@,<>]+$/;
+
+/** The form's fields, checked. A string is what to tell the person. */
+export function readNewEvent(form: FormData): NewEvent | string {
+  const text = (name: string) => String(form.get(name) ?? "").trim();
+  const title = text("title");
+  if (!title) return "An event needs a title.";
+  if (title.length > 200) return "That title is too long.";
+  const date = text("date");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return "Pick a date.";
+
+  const allDay = form.get("allDay") !== null;
+  const time = (value: string) => (/^\d{2}:\d{2}$/.test(value) ? value : "");
+  const startTime = time(text("start"));
+  let endTime = time(text("end"));
+  if (!allDay) {
+    if (!startTime) return "Pick a start time, or tick All day.";
+    // Left blank, the end is the office's usual half hour.
+    if (!endTime) endTime = addMinutes(startTime, DEFAULT_MINUTES);
+    if (endTime <= startTime) return "The end has to be after the start, on the same day.";
+  }
+
+  // Ticked people and typed addresses both end up here, typed ones split on
+  // commas, spaces or new lines.
+  const guests = [
+    ...form.getAll("guest").map(String),
+    ...text("guests").split(/[\s,;]+/),
+  ]
+    .map((g) => g.trim().toLowerCase())
+    .filter(Boolean);
+  const bad = guests.find((g) => !EMAIL.test(g));
+  if (bad) return `“${bad}” isn't an email address.`;
+
+  return {
+    title,
+    date,
+    ...(allDay ? {} : { startTime, endTime }),
+    location: text("location").slice(0, 300),
+    description: text("description").slice(0, 4000),
+    guests: [...new Set(guests)],
+  };
+}
+
+/**
+ * Puts the event on the calendar as the office account. Guests are sent
+ * Google's invitation, the same as for a tour.
+ */
+export async function createOfficeEvent(e: NewEvent): Promise<void> {
+  if (!officeCalendarConfigured()) throw new Error("not-configured");
+  const event = {
+    title: e.title,
+    location: e.location,
+    description: e.description,
+    guests: e.guests,
+    timeZone: TOUR_TIMEZONE,
+    ...(e.startTime && e.endTime
+      ? { start: `${e.date} ${e.startTime}:00`, end: `${e.date} ${e.endTime}:00` }
+      : { allDayOn: e.date }),
+  };
+  const res = await fetch(OFFICE_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    // No key and no eventId: this is always a new event, never an update of a
+    // tour the script has booked before.
+    body: JSON.stringify({ secret: OFFICE_WEBHOOK_SECRET, event }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  const text = await res.text();
+  let body: any;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `non-JSON reply (HTTP ${res.status}) — check the office deployment is "Anyone" ` +
+        `and its URL ends in /exec: ${text.slice(0, 120)}`
+    );
+  }
+  if (!res.ok || !body.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+}

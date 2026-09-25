@@ -917,6 +917,29 @@ through to the booking path and answers `missing title`, which is a baffling
 thing to meet on a calendar page, so `doctor` asks each one directly and names
 the ones that are stale.
 
+### Making an event
+
+**+ New event** at the top of the page puts an event on the calendar — an
+inspection, a key handover, a meeting — with guests invited by Google as usual.
+It is created **as the office account**, not as whoever deployed the tour
+webhook: Apps Script always acts as the account that deployed it, so this goes
+through a second deployment of the same `google-apps-script/tour-calendar.gs`,
+made while signed in as the office account.
+
+1. Signed in to Google **as the office account**, repeat the deployment steps at
+   the top of `tour-calendar.gs` in a new Apps Script project, with its own
+   `SECRET`. Set `CALENDAR_ID` there to the calendar this page reads, or the
+   events land on the office account's own calendar and never show up here.
+2. In `.env`:
+
+   ```
+   CALENDAR_OFFICE_WEBHOOK_URL=https://script.google.com/macros/s/…/exec
+   CALENDAR_OFFICE_WEBHOOK_SECRET=<that deployment's SECRET>
+   CALENDAR_OFFICE_ACCOUNT=office@example.com   # only the label on the form
+   ```
+3. Restart. Until both are set the form says it isn't set up rather than
+   quietly creating events as somebody else.
+
 ## Driveway plates
 
 Cars parked in the driveway that shouldn't be, at `/plates`. The point of the

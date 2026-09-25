@@ -1,10 +1,13 @@
 import { FAVICON_LINK } from "./auth";
 import {
+  OFFICE_ACCOUNT,
   STANDING_GUESTS,
   TOUR_TIMEZONE,
   fetchAgenda,
   guideEmails,
   leadNames,
+  officeCalendarConfigured,
+  propertyAddresses,
   type AgendaEvent,
 } from "./calendar";
 import { PAGE_CSS } from "./inspections";
@@ -153,7 +156,131 @@ const AGENDA_CSS = `
       border: 1px solid #f0d68a; color: #6b5300; line-height: 1.6;
     }
     .agenda-problem code { background: rgba(0,0,0,0.06); padding: 0 0.25rem; border-radius: 3px; }
+
+    /* ---- a new event, made by hand ---- */
+    .new-event { margin: 10px 0 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+    .new-event > summary {
+      cursor: pointer; padding: 9px 14px; font-weight: 600; font-size: 0.9rem; color: var(--accent);
+      list-style: none;
+    }
+    .new-event > summary::-webkit-details-marker { display: none; }
+    .new-event[open] > summary { border-bottom: 1px solid var(--line); }
+    .new-event .as { color: var(--muted); font-weight: 400; font-size: 0.8rem; margin-left: 6px; }
+    .new-event form { padding: 12px 14px 14px; display: grid; gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .new-event label { display: flex; flex-direction: column; gap: 3px; font-size: 0.75rem;
+      color: var(--muted); font-weight: 600; min-width: 0; }
+    .new-event .wide { grid-column: 1 / -1; }
+    .new-event input[type="text"], .new-event input[type="date"], .new-event input[type="time"],
+    .new-event textarea {
+      font: inherit; font-size: 0.9rem; font-weight: 400; color: var(--ink); padding: 6px 8px;
+      border: 1px solid var(--line); border-radius: 6px; background: #fff; width: 100%; min-width: 0;
+    }
+    .new-event textarea { min-height: 4.5rem; resize: vertical; }
+    .new-event input:disabled { background: #f3f4f6; color: var(--muted); }
+    .new-event .check { flex-direction: row; align-items: center; gap: 6px; font-weight: 400;
+      color: var(--ink); font-size: 0.85rem; }
+    .new-event .people { display: flex; gap: 6px 14px; flex-wrap: wrap; }
+    .new-event .actions { display: flex; gap: 10px; align-items: center; }
+    .new-event button { font: inherit; font-weight: 600; font-size: 0.88rem; padding: 7px 16px;
+      border: 0; border-radius: 6px; background: #1f2937; color: #fff; cursor: pointer; }
+    .new-event button:hover { background: #374151; }
+    .new-event button[disabled] { opacity: 0.6; cursor: default; }
+    .new-event .hint { color: var(--muted); font-size: 0.8rem; }
+    .form-error, .form-done { margin: 10px 0 0; padding: 9px 12px; border-radius: 8px; font-size: 0.88rem; }
+    .form-error { background: #fdecec; border: 1px solid #f5c2c2; color: #8a1c1c; }
+    .form-done { background: #e8f5ec; border: 1px solid #b7dfc3; color: #14532d; }
 `;
+
+/** What the new-event form comes back with: a problem and what was typed, or what was made. */
+export type NewEventState = {
+  error?: string;
+  values?: Record<string, string | string[]>;
+  created?: string;
+};
+
+/**
+ * The form for an event nobody is touring: an inspection, a key handover, a
+ * meeting. It is made as the office account (see createOfficeEvent), so the
+ * invitation comes from the office and the event outlives whoever typed it.
+ *
+ * A plain form post rather than a script: it must work on a phone in a hallway,
+ * and the page after it is the calendar with the event on it.
+ */
+function newEventForm(state: NewEventState): string {
+  if (!officeCalendarConfigured()) {
+    return `<details class="new-event"><summary>+ New event</summary>
+      <div class="agenda-problem" style="margin:12px 14px">
+        <strong>Not set up yet.</strong> Events made here are created as the office account, which
+        needs its own deployment of <code>google-apps-script/tour-calendar.gs</code>, made while signed
+        in as that account. Put its URL and secret in <code>.env</code> as
+        <code>CALENDAR_OFFICE_WEBHOOK_URL</code> and <code>CALENDAR_OFFICE_WEBHOOK_SECRET</code>
+        (and <code>CALENDAR_OFFICE_ACCOUNT</code>, the address, for this label), then restart.
+      </div></details>`;
+  }
+  const v = state.values ?? {};
+  const val = (name: string) => escapeHtml(typeof v[name] === "string" ? v[name] : "");
+  const ticked = new Set((Array.isArray(v.guest) ? v.guest : v.guest ? [v.guest] : []).map(String));
+  const allDay = v.allDay !== undefined;
+  const people = Object.entries(guideEmails())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([name, email]) =>
+        `<label class="check"><input type="checkbox" name="guest" value="${escapeHtml(email)}"${
+          ticked.has(email) ? " checked" : ""
+        } /> ${escapeHtml(name[0]!.toUpperCase() + name.slice(1))}</label>`
+    )
+    .join("");
+  const places = [...new Set(Object.values(propertyAddresses()))]
+    .sort()
+    .map((a) => `<option value="${escapeHtml(a)}"></option>`)
+    .join("");
+
+  return `<details class="new-event" id="new-event"${state.error ? " open" : ""}>
+    <summary>+ New event${OFFICE_ACCOUNT ? `<span class="as">created as ${escapeHtml(OFFICE_ACCOUNT)}</span>` : ""}</summary>
+    ${state.error ? `<p class="form-error" style="margin:12px 14px 0">${escapeHtml(state.error)}</p>` : ""}
+    <form method="post" action="/calendar/events">
+      <label class="wide">Title<input type="text" name="title" required maxlength="200" value="${val("title")}"
+        placeholder="Move-out walkthrough, key handover, …" /></label>
+      <label>Date<input type="date" name="date" required value="${val("date") || todayHere()}" /></label>
+      <label>Start<input type="time" name="start" step="300" value="${val("start")}"${allDay ? " disabled" : ""} /></label>
+      <label>End<input type="time" name="end" step="300" value="${val("end")}"${allDay ? " disabled" : ""} /></label>
+      <label class="check"><input type="checkbox" name="allDay"${allDay ? " checked" : ""} /> All day</label>
+      <label class="wide">Where<input type="text" name="location" list="event-places" value="${val("location")}"
+        placeholder="An address, or anything else" /></label>
+      <datalist id="event-places">${places}</datalist>
+      ${people ? `<div class="wide"><label>Invite</label><div class="people">${people}</div></div>` : ""}
+      <label class="wide">Other guests<input type="text" name="guests" value="${val("guests")}"
+        placeholder="Email addresses, separated by commas" /></label>
+      <label class="wide">Description<textarea name="description" maxlength="4000">${val("description")}</textarea></label>
+      <div class="wide actions">
+        <button type="submit">Create event</button>
+        <span class="hint">Guests get an invitation from the office account. No end time means half an hour.</span>
+      </div>
+    </form>
+  </details>
+  <script>
+  (function () {
+    var form = document.querySelector(".new-event form");
+    if (!form) return;
+    var allDay = form.elements.allDay, start = form.elements.start, end = form.elements.end;
+    allDay.addEventListener("change", function () {
+      start.disabled = end.disabled = allDay.checked;
+    });
+    // A start moved past the end takes the end with it, half an hour on.
+    start.addEventListener("change", function () {
+      if (!start.value || (end.value && end.value > start.value)) return;
+      var p = start.value.split(":"), t = Math.min(+p[0] * 60 + +p[1] + 30, 23 * 60 + 59);
+      end.value = String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0");
+    });
+    // Apps Script takes a few seconds; a second press would make a second event.
+    form.addEventListener("submit", function () {
+      var b = form.querySelector("button[type=submit]");
+      b.disabled = true; b.textContent = "Creating…";
+    });
+  })();
+  </script>`;
+}
 
 /** Events grouped by the day they start on, days in order, empty days dropped. */
 function byDay(events: AgendaEvent[]): [string, AgendaEvent[]][] {
@@ -376,7 +503,8 @@ export async function renderAgendaPage(
   nav: string,
   navCss: string,
   start?: string,
-  filters: AgendaFilters = {}
+  filters: AgendaFilters = {},
+  create: NewEventState = {}
 ): Promise<string> {
   const today = todayHere();
   const from = /^\d{4}-\d{2}-\d{2}$/.test(start ?? "") ? start! : today;
@@ -494,6 +622,8 @@ ${AGENDA_CSS}
     </div>
     <p class="lede">${escapeHtml(niceDay(from))} to ${escapeHtml(niceDay(to))} &mdash;
       read from the calendar each time this page is opened, so it is never stale.</p>
+${create.created ? `<p class="form-done">Created “${escapeHtml(create.created)}” — it's on the calendar, and the guests have their invitations.</p>` : ""}
+${newEventForm(create)}
 ${bar}
 ${body}
   </div>

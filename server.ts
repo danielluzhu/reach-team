@@ -8,11 +8,13 @@ import {
   type Section,
 } from "./doc";
 import {
+  createOfficeEvent,
   enqueueNewTours,
   flushQueue,
+  readNewEvent,
   startCalendarWorker,
 } from "./calendar";
-import { renderAgendaPage } from "./agenda";
+import { renderAgendaPage, todayHere } from "./agenda";
 import { db, SHEET_VERSIONS_KEPT } from "./db";
 import {
   MAX_PHOTOS,
@@ -2154,10 +2156,56 @@ const server = Bun.serve({
           {
             address: url.searchParams.get("address") ?? undefined,
             lead: url.searchParams.get("lead") ?? undefined,
-          }
+          },
+          { created: url.searchParams.get("created")?.slice(0, 200) || undefined }
         ),
         { headers: HTML_HEADERS }
       );
+    }
+    /**
+     * An event made by hand on the Calendar page, created as the office account
+     * (see createOfficeEvent). A refusal re-draws the page with the form open
+     * and what was typed still in it; a success goes back to the calendar,
+     * opened on the week the event is in.
+     */
+    if (url.pathname === "/calendar/events") {
+      if (req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+      const form = await req.formData();
+      const refuse = async (error: string, status: number) => {
+        const values: Record<string, string | string[]> = {};
+        for (const key of new Set(form.keys())) {
+          const all = form.getAll(key).map(String);
+          values[key] = key === "guest" ? all : all[0] ?? "";
+        }
+        return new Response(
+          await renderAgendaPage(renderNav("/calendar", user), NAV_CSS, undefined, {}, { error, values }),
+          { status, headers: HTML_HEADERS }
+        );
+      };
+      const event = readNewEvent(form);
+      if (typeof event === "string") return refuse(event, 400);
+      try {
+        await createOfficeEvent(event);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        console.error(`[${new Date().toISOString()}] event by ${user.username} not created: ${reason}`);
+        return refuse(
+          reason === "not-configured"
+            ? "Creating events isn't set up yet — see the note under + New event."
+            : `Google didn't create it: ${reason}`,
+          502
+        );
+      }
+      console.log(
+        `[${new Date().toISOString()}] event created by ${user.username} as the office: ` +
+          `"${event.title}" ${event.date} ${event.startTime ?? "all day"}`
+      );
+      const back = new URLSearchParams({ created: event.title });
+      if (event.date !== todayHere()) back.set("start", event.date);
+      return new Response(null, {
+        status: 303,
+        headers: { Location: `/calendar?${back}`, "Cache-Control": "no-store" },
+      });
     }
     if (url.pathname === "/plates") {
       if (req.method === "GET") {
