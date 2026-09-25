@@ -1169,8 +1169,8 @@ function inspectionKinds(inspections: Inspection[]): Map<string, KindVerdict> {
     if (isKind(row.kind)) stored.set(row.checklist_id, { kind: row.kind, setByName: row.set_by_name });
   }
 
-  // A report typed without its unit — "5643 Brooklyn Ave NE" beside Nina
-  // Chenu's "5643 Brooklyn Ave NE, Upper Unit" — belongs to the one unit that
+  // A report typed without its unit — "12 Example Ave NE" beside the same
+  // tenant's "12 Example Ave NE, Upper Unit" — belongs to the one unit that
   // tenant has in that building. With two of them to choose from it stays on
   // its own, rather than being pinned to either.
   const person = (i: Inspection) =>
