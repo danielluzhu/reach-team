@@ -2835,7 +2835,8 @@ const withoutPlace = (flat: string) =>
 const buildingKey = (value: unknown) => withoutPlace(flatten(value));
 
 /**
- * "Unit 003", "U3", "no. 3" and "3" are the same unit; "Upper Unit" is "upper".
+ * "Unit 003", "U3", "no. 3" and "3" are the same unit; "Upper Unit" is "upper",
+ * which is also "U" — and "Lower" is "L".
  * The sheet and the checklist are typed by different people on different days,
  * and neither is wrong.
  */
@@ -2845,7 +2846,9 @@ const unitKey = (value: unknown) => {
     .replace(/\s+/g, " ")
     .trim();
   const digits = /^u?0*(\d+)$/.exec(bare.replace(/\s+/g, ""));
-  return digits ? digits[1] : bare;
+  if (digits) return digits[1];
+  // The two halves of a duplex: "#L" on the Home page is "Lower" on the lease.
+  return bare === "lower" ? "l" : bare === "upper" ? "u" : bare;
 };
 
 /**
