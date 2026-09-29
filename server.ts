@@ -15,6 +15,7 @@ import {
   startCalendarWorker,
 } from "./calendar";
 import { renderAgendaPage, todayHere } from "./agenda";
+import { isApplyPath, proxyApplyForm, renderApplicationsList, serveApplicationPdf } from "./applications";
 import { db, SHEET_VERSIONS_KEPT } from "./db";
 import {
   MAX_PHOTOS,
@@ -91,6 +92,7 @@ const LEADING_NAV_LINKS: [string, string][] = [["/", "Home Access"]];
 const TRAILING_NAV_LINKS: [string, string][] = [
   ["/calendar", "Calendar"],
   ["/inspections", "Inspections"],
+  ["/applications", "Applications"],
   ["/plates", "Driveway Plates"],
   ["/workflow", "Prospect Workflow"],
 ];
@@ -1736,6 +1738,19 @@ const server = Bun.serve({
       return await proxyTenantForm(req, url, token, invitation.link, invitation.inspection.id);
     }
 
+    /**
+     * The rental application form, open to anyone: the people filling it in
+     * are applying to become tenants and have no account here. It runs on
+     * :3200, which answers only to this machine, and comes through here on an
+     * allowlist of the paths it uses — see applications.ts.
+     */
+    if (isApplyPath(url.pathname)) {
+      if (originMismatch(req)) {
+        return Response.json({ error: "cross-origin request rejected" }, { status: 403 });
+      }
+      return await proxyApplyForm(req, url);
+    }
+
     const user = authenticate(req);
     if (user instanceof Response) return user;
 
@@ -1769,6 +1784,18 @@ const server = Bun.serve({
      */
     if (isChecklistPath(url.pathname)) {
       return await proxyChecklistApp(req, url);
+    }
+
+    // Submitted rental applications, read out of the form app's own database.
+    if (url.pathname === "/applications") {
+      return new Response(renderApplicationsList(renderNav("/applications", user), NAV_CSS), {
+        headers: HTML_HEADERS,
+      });
+    }
+    const applicationPdf = url.pathname.match(/^\/applications\/([0-9a-f-]{36})\.pdf$/);
+    if (applicationPdf) {
+      if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
+      return await serveApplicationPdf(applicationPdf[1]);
     }
 
     // The signed move-in checklists, read out of the checklist app's own

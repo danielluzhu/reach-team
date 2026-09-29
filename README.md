@@ -1398,6 +1398,23 @@ both to rebuild a missing PDF and to serve the form under `/checklist` — with
 and the timezone the signing times are read in with `CHECKLIST_TZ` — it defaults
 to `America/Los_Angeles`, because the properties are here.
 
+## Applications
+
+Rental applications are filled in on a **separate app** (`applications/`, on
+:3200, run as `apply.service`) — see `applications/README.md`. Like the
+checklist it binds to localhost; unlike it, the form is **public**: `/apply`
+answers without a sign-in, because applicants have no account here, and passes
+requests on to :3200 through an allowlist of the paths the form uses
+(`applications.ts`). Nothing on that list reads a stored application or an
+uploaded document back; the applicant gets their own copy on a separate random
+receipt link.
+
+The **Applications** tab lists what came in, newest first, read out of
+`applications/applications.db` **read-only**, with each PDF — the application,
+the signature and every attached document in one file — served at
+`/applications/<id>.pdf` behind the sign-in. The tab shows the public link to
+send out; `?property=` on it fills in which home the application is for.
+
 ## The doc pages
 
 `doc.ts` reads a raw Google Docs export and rebuilds it as semantic HTML:
