@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#111827" />
+<title>Rental Application</title>
+<link rel="icon" href="__BASE__/favicon.svg" type="image/svg+xml" />
+<style>
+  :root {
+    --ink: #111827; --muted: #6b7280; --line: #e5e7eb; --bg: #f4f5f7;
+    --accent: #1d4ed8; --good: #12734a; --bad: #b3261e;
+    --tap: 44px;
+    --footer: calc(72px + env(safe-area-inset-bottom));
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding-bottom: var(--footer);
+    overscroll-behavior-y: contain; /* no pull-to-refresh halfway down a form */
+  }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 0 16px; }
+
+  header { background: var(--ink); color: #fff; padding: 18px 0 16px; }
+  header .wrap { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  header h1 { margin: 0; font-size: 1.05rem; letter-spacing: -0.01em; }
+  header .step { font-size: 0.78rem; color: #9ca3af; white-space: nowrap; }
+  .bar { height: 3px; background: #374151; }
+  .bar i { display: block; height: 100%; background: #60a5fa; width: 25%; transition: width 0.25s ease; }
+
+  .restored { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; padding: 10px 12px;
+    background: #e7f4ec; border: 1px solid #b7e0c6; border-radius: 10px;
+    color: #14532d; font-size: 0.85rem; line-height: 1.4; }
+  .restored button { flex: none; border: 0; background: none; padding: 4px 6px; font: inherit;
+    font-size: 0.8rem; font-weight: 600; color: #14532d; text-decoration: underline; cursor: pointer; }
+
+  section[hidden], [hidden] { display: none !important; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin: 14px 0; }
+  .card > h2 { margin: 0 0 4px; font-size: 1rem; }
+  .card > p.sub { margin: 0 0 14px; color: var(--muted); font-size: 0.85rem; }
+  .card h3 { margin: 18px 0 2px; font-size: 0.9rem; display: flex; align-items: center; gap: 8px; }
+  .card h3:first-of-type { margin-top: 4px; }
+  .card h3 .kill { margin-left: auto; }
+
+  label { display: block; font-size: 0.82rem; font-weight: 600; color: #374151; margin: 14px 0 6px; }
+  label .opt { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=email], input[type=tel], input[type=date], input[type=month], select, textarea {
+    width: 100%; min-height: var(--tap); padding: 10px 12px; border: 1px solid #cbd5e1;
+    border-radius: 10px; font: inherit; font-size: 16px; /* 16px or iOS zooms on focus */
+    background: #fff; color: inherit;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  input:focus, select:focus, textarea:focus, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent;
+  }
+  input.invalid, select.invalid { border-color: var(--bad); background: #fff7f7; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 12px; }
+  @media (max-width: 420px) { .row2, .row3 { grid-template-columns: 1fr; } }
+
+  .check { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; font-size: 0.9rem;
+    color: var(--ink); margin: 12px 0 0; cursor: pointer; }
+  .check input { width: 22px; height: 22px; flex: none; margin: 1px 0 0; accent-color: var(--accent); }
+
+  .add { display: inline-flex; align-items: center; gap: 6px; margin-top: 14px; min-height: var(--tap);
+    padding: 0 14px; border: 1px dashed #94a3b8; border-radius: 10px; background: #fff;
+    color: var(--accent); font: inherit; font-size: 0.9rem; font-weight: 600; cursor: pointer; }
+  .kill { border: 0; background: none; color: #9ca3af; font: inherit; font-size: 0.8rem;
+    text-decoration: underline; cursor: pointer; padding: 4px; }
+
+  .files { list-style: none; margin: 12px 0 0; padding: 0; }
+  .files li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line);
+    font-size: 0.88rem; }
+  .files li:first-child { border-top: 0; }
+  .files .thumb { width: 44px; height: 44px; flex: none; border-radius: 8px; background: #eef0f3 center/cover;
+    display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; color: var(--muted); }
+  .files .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .files .st { font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+  .files .st.err { color: var(--bad); }
+
+  .summary dl { margin: 0; display: grid; grid-template-columns: 9.5rem 1fr; gap: 6px 12px; font-size: 0.88rem; }
+  .summary dt { color: var(--muted); }
+  .summary dd { margin: 0; overflow-wrap: anywhere; }
+  .summary .edit { float: right; border: 0; background: none; color: var(--accent); font: inherit;
+    font-size: 0.82rem; font-weight: 600; cursor: pointer; padding: 0 0 0 8px; }
+  .legal { font-size: 0.85rem; color: #374151; }
+  .legal ul { padding-left: 18px; margin: 8px 0 0; }
+  .legal li { margin: 4px 0; }
+
+  .sigwrap { position: relative; border: 1px dashed #94a3b8; border-radius: 10px; background: #fff;
+    height: 190px; margin-top: 10px; overflow: hidden; }
+  .sigwrap canvas { display: block; width: 100%; height: 190px; touch-action: none; }
+  .sigwrap .hint { position: absolute; inset: auto 0 12px 0; text-align: center; color: #9ca3af;
+    font-size: 0.85rem; pointer-events: none; }
+  .sigwrap.signed .hint { display: none; }
+
+  .error { margin: 14px 0 0; padding: 10px 12px; border-radius: 10px; background: #fdecea;
+    border: 1px solid #f5c2bd; color: #7f1d1d; font-size: 0.88rem; }
+
+  footer { position: fixed; left: 0; right: 0; bottom: 0; background: #fff; border-top: 1px solid var(--line);
+    padding: 12px 0 calc(12px + env(safe-area-inset-bottom)); }
+  footer .wrap { display: flex; gap: 10px; }
+  footer button { min-height: var(--tap); border-radius: 10px; font: inherit; font-weight: 600; cursor: pointer; }
+  #back { flex: none; padding: 0 18px; background: #fff; border: 1px solid #cbd5e1; color: var(--ink); }
+  #next { flex: 1; background: var(--accent); border: 0; color: #fff; }
+  #next:disabled { opacity: 0.5; cursor: default; }
+
+  .done { text-align: center; padding: 30px 16px; }
+  .done .tick { font-size: 2.6rem; }
+  .done h2 { margin: 6px 0 8px; }
+  .done p { color: #374151; }
+  .done a.btn { display: inline-flex; align-items: center; justify-content: center; min-height: var(--tap);
+    padding: 0 18px; margin-top: 8px; border-radius: 10px; background: var(--accent); color: #fff;
+    text-decoration: none; font-weight: 600; }
+  .build { text-align: center; color: #b6bcc5; font-size: 0.7rem; margin: 18px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap"><h1>Rental Application</h1><span class="step" id="step-label">Step 1 of 4</span></div>
+</header>
+<div class="bar"><i id="bar"></i></div>
+
+<main class="wrap">
+  <div id="restored" class="restored" hidden>
+    <span style="flex:1">Picked up where you left off.</span>
+    <button type="button" id="start-over">Start over</button>
+  </div>
+
+  <!-- 1 · you and the home -->
+  <section data-step="1">
+    <div class="card">
+      <h2>The home</h2>
+      <p class="sub">Which place you&rsquo;re applying for, and when you&rsquo;d like to move in.</p>
+      <label for="property">Property address</label>
+      <input type="text" id="property" data-k="property" autocomplete="off" placeholder="Street address and unit" />
+      <div class="row2">
+        <div><label for="moveIn">Desired move-in date</label><input type="date" id="moveIn" data-k="moveIn" /></div>
+        <div><label for="leaseTerm">Lease term</label><select id="leaseTerm" data-k="leaseTerm"></select></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>About you</h2>
+      <p class="sub">Every adult who will live there fills in an application of their own.</p>
+      <label for="name">Full legal name</label>
+      <input type="text" id="name" data-k="name" autocomplete="name" />
+      <div class="row2">
+        <div><label for="email">Email</label><input type="email" id="email" data-k="email" autocomplete="email" /></div>
+        <div><label for="phone">Phone</label><input type="tel" id="phone" data-k="phone" autocomplete="tel" /></div>
+      </div>
+      <label for="dob">Date of birth</label>
+      <input type="date" id="dob" data-k="dob" autocomplete="bday" />
+    </div>
+  </section>
+
+  <!-- 2 · where you've lived, what you earn -->
+  <section data-step="2" hidden>
+    <div class="card">
+      <h2>Where you&rsquo;ve lived</h2>
+      <p class="sub">Your current home, and the one before if you&rsquo;ve been there under two years.</p>
+      <div id="residences"></div>
+      <button type="button" class="add" id="add-residence">+ Add a previous address</button>
+    </div>
+    <div class="card">
+      <h2>Employment and income</h2>
+      <p class="sub">Gross monthly income is before tax. Leave this out if you&rsquo;re not employed and list other income below.</p>
+      <div id="jobs"></div>
+      <button type="button" class="add" id="add-job">+ Add another employer</button>
+      <label for="otherIncome">Other income <span class="opt">&mdash; optional: benefits, support, savings, a guarantor</span></label>
+      <textarea id="otherIncome" data-k="otherIncome"></textarea>
+    </div>
+  </section>
+
+  <!-- 3 · household and documents -->
+  <section data-step="3" hidden>
+    <div class="card">
+      <h2>Who else will live there</h2>
+      <p class="sub">Leave this empty if it&rsquo;s just you.</p>
+      <div id="occupants"></div>
+      <button type="button" class="add" id="add-occupant">+ Add a person</button>
+    </div>
+    <div class="card">
+      <h2>Pets and vehicles</h2>
+      <label for="pets">Pets <span class="opt">&mdash; kind, breed and weight; leave empty for none</span></label>
+      <textarea id="pets" data-k="pets"></textarea>
+      <div id="vehicles"></div>
+      <button type="button" class="add" id="add-vehicle">+ Add a vehicle</button>
+    </div>
+    <div class="card">
+      <h2>Emergency contact</h2>
+      <label for="emergencyName">Name</label>
+      <input type="text" id="emergencyName" data-k="emergencyName" />
+      <div class="row2">
+        <div><label for="emergencyPhone">Phone</label><input type="tel" id="emergencyPhone" data-k="emergencyPhone" /></div>
+        <div><label for="emergencyRelationship">Relationship</label><input type="text" id="emergencyRelationship" data-k="emergencyRelationship" /></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Documents</h2>
+      <p class="sub">A photo ID and proof of income &mdash; recent pay stubs, an offer letter or a bank statement.
+        Photos or PDFs; they upload as you pick them.</p>
+      <input type="file" id="file-input" accept="image/jpeg,image/png,image/*,application/pdf" multiple hidden />
+      <button type="button" class="add" id="add-files" style="margin-top:0">+ Add photos or PDFs</button>
+      <ul class="files" id="files"></ul>
+    </div>
+    <div class="card">
+      <h2>Anything else</h2>
+      <label for="notes"><span class="opt">Optional &mdash; anything you&rsquo;d like us to know.</span></label>
+      <textarea id="notes" data-k="notes"></textarea>
+    </div>
+  </section>
+
+  <!-- 4 · review and sign -->
+  <section data-step="4" hidden>
+    <div class="card summary" id="summary"></div>
+    <div class="card legal">
+      <h2>Screening notice</h2>
+      <p id="screening-notice"></p>
+      <label class="check"><input type="checkbox" id="screeningAcknowledged" data-k="screeningAcknowledged" />
+        <span>I have read the screening notice.</span></label>
+    </div>
+    <div class="card legal">
+      <h2>Before you sign</h2>
+      <ul id="acknowledgements"></ul>
+      <label class="check"><input type="checkbox" id="certified" data-k="certified" />
+        <span id="certification"></span></label>
+      <label style="margin-top:18px">Your signature</label>
+      <div class="sigwrap" id="sigwrap"><canvas id="sig"></canvas><div class="hint">Sign here with your finger or mouse</div></div>
+      <button type="button" class="kill" id="clear-sig" style="margin-top:6px">Clear signature</button>
+    </div>
+  </section>
+
+  <section id="done" hidden>
+    <div class="card done">
+      <div class="tick">✅</div>
+      <h2>Application received</h2>
+      <p>Thank you. We&rsquo;ll be in touch about next steps.</p>
+      <a class="btn" id="copy-link" href="#" target="_blank" rel="noopener">Download your copy (PDF)</a>
+    </div>
+  </section>
+
+  <div class="error" id="error" hidden></div>
+  <p class="build">build __BUILD__</p>
+</main>
+
+<footer id="footer">
+  <div class="wrap">
+    <button type="button" id="back">Back</button>
+    <button type="button" id="next">Continue</button>
+  </div>
+</footer>
+
+<script>
+"use strict";
+var BASE = "__BASE__";
+var DRAFT_KEY = "rental-application-draft-v1";
+var DRAFT_MAX_AGE = 7 * 24 * 60 * 60 * 1000;
+var STEPS = 4;
+
+var $ = function (id) { return document.getElementById(id); };
+var esc = function (s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+};
+
+function reportError(message) {
+  try {
+    fetch(BASE + "/api/client-error", { method: "POST", body: "build __BUILD__: " + message, keepalive: true });
+  } catch (e) { /* nothing more to be done */ }
+}
+window.addEventListener("error", function (e) { reportError(e.message + " @" + e.lineno); });
+
+var blankResidence = function () {
+  return { address: "", from: "", to: "", rent: "", landlordName: "", landlordPhone: "", reason: "" };
+};
+var blankJob = function () {
+  return { employer: "", position: "", from: "", monthlyIncome: "", contactName: "", contactPhone: "" };
+};
+
+function freshState() {
+  return {
+    step: 1,
+    property: "", moveIn: "", leaseTerm: "12 months",
+    name: "", email: "", phone: "", dob: "",
+    residences: [blankResidence()], jobs: [blankJob()], otherIncome: "",
+    occupants: [], pets: "", vehicles: [],
+    emergencyName: "", emergencyPhone: "", emergencyRelationship: "",
+    notes: "", attachments: [],
+    screeningAcknowledged: false, certified: false
+  };
+}
+
+var state = freshState();
+var terms = null;
+var uploading = 0;
+/* Thumbnails of photos picked on this visit. A restored draft has the file
+   names but not the pictures: uploads are never served back to the public. */
+var previews = {};
+
+/* ---- saving the draft ----
+   Everything except the signature, which has to be made, not restored. Saved
+   as it is typed and synchronously as the page goes away — the moment a phone
+   discards a backgrounded tab. */
+var saveTimer = null;
+function saveNow() {
+  clearTimeout(saveTimer);
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify({ savedAt: Date.now(), state: state })); } catch (e) { /* private mode */ }
+}
+function save() { clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400); }
+document.addEventListener("visibilitychange", function () { if (document.visibilityState === "hidden") saveNow(); });
+window.addEventListener("pagehide", saveNow);
+
+function loadDraft() {
+  try {
+    var raw = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null");
+    if (!raw || !raw.state || Date.now() - raw.savedAt > DRAFT_MAX_AGE) return null;
+    var s = Object.assign(freshState(), raw.state);
+    // A page opened and closed again leaves a draft with nothing in it; that
+    // isn't somewhere to be "picked up" from.
+    if (!s.property && !s.name && !s.email && !s.attachments.length) return null;
+    if (!Array.isArray(s.residences) || !s.residences.length) s.residences = [blankResidence()];
+    ["jobs", "occupants", "vehicles", "attachments"].forEach(function (k) { if (!Array.isArray(s[k])) s[k] = []; });
+    s.step = Math.min(Math.max(1, s.step | 0), 3); // never straight onto the signature
+    s.certified = false;
+    return s;
+  } catch (e) { return null; }
+}
+function clearDraft() { try { localStorage.removeItem(DRAFT_KEY); } catch (e) { /* nothing stored */ } }
+
+/* ---- plain fields ---- */
+function bindFields() {
+  document.querySelectorAll("[data-k]").forEach(function (el) {
+    var k = el.dataset.k;
+    if (el.type === "checkbox") el.checked = !!state[k];
+    else el.value = state[k] == null ? "" : state[k];
+    el.addEventListener(el.type === "checkbox" || el.tagName === "SELECT" ? "change" : "input", function () {
+      state[k] = el.type === "checkbox" ? el.checked : el.value;
+      el.classList.remove("invalid");
+      save();
+      if (state.step === 4) updateNext();
+    });
+  });
+}
+
+/* ---- repeating groups ---- */
+function field(list, i, f, label, type, extra) {
+  var id = list + "-" + i + "-" + f;
+  return '<div><label for="' + id + '">' + label + '</label><input type="' + (type || "text") + '" id="' + id +
+    '" data-list="' + list + '" data-i="' + i + '" data-f="' + f + '" value="' + esc(state[list][i][f]) + '"' +
+    (extra || "") + " /></div>";
+}
+var opt = ' <span class="opt">(optional)</span>';
+
+var GROUPS = {
+  residences: function (r, i) {
+    return "<h3>" + (i === 0 ? "Current address" : "Previous address " + i) +
+      (i ? '<button type="button" class="kill" data-kill="residences" data-i="' + i + '">Remove</button>' : "") + "</h3>" +
+      field("residences", i, "address", "Street, unit, city, state, ZIP") +
+      '<div class="row2">' + field("residences", i, "from", "Moved in", "month", ' placeholder="YYYY-MM"') +
+      (i ? field("residences", i, "to", "Moved out", "month", ' placeholder="YYYY-MM"') : field("residences", i, "rent", "Monthly rent" + opt, "text", ' inputmode="decimal"')) + "</div>" +
+      (i ? field("residences", i, "rent", "Monthly rent" + opt, "text", ' inputmode="decimal"') : "") +
+      '<div class="row2">' + field("residences", i, "landlordName", "Landlord or manager" + opt) +
+      field("residences", i, "landlordPhone", "Their phone" + opt, "tel") + "</div>" +
+      field("residences", i, "reason", "Reason for leaving" + opt);
+  },
+  jobs: function (j, i) {
+    return "<h3>" + (state.jobs.length > 1 ? "Employer " + (i + 1) : "Employer") +
+      '<button type="button" class="kill" data-kill="jobs" data-i="' + i + '">Remove</button></h3>' +
+      '<div class="row2">' + field("jobs", i, "employer", "Employer") + field("jobs", i, "position", "Position") + "</div>" +
+      '<div class="row2">' + field("jobs", i, "from", "Started", "month", ' placeholder="YYYY-MM"') +
+      field("jobs", i, "monthlyIncome", "Gross monthly income", "text", ' inputmode="decimal"') + "</div>" +
+      '<div class="row2">' + field("jobs", i, "contactName", "Supervisor or HR" + opt) +
+      field("jobs", i, "contactPhone", "Their phone" + opt, "tel") + "</div>";
+  },
+  occupants: function (o, i) {
+    return "<h3>Person " + (i + 1) + '<button type="button" class="kill" data-kill="occupants" data-i="' + i + '">Remove</button></h3>' +
+      '<div class="row2">' + field("occupants", i, "name", "Full name") + field("occupants", i, "relationship", "Relationship to you") + "</div>" +
+      '<label class="check"><input type="checkbox" data-list="occupants" data-i="' + i + '" data-f="adult"' +
+      (o.adult ? " checked" : "") + " /><span>18 or older (they&rsquo;ll need their own application)</span></label>";
+  },
+  vehicles: function (v, i) {
+    return "<h3>Vehicle " + (i + 1) + '<button type="button" class="kill" data-kill="vehicles" data-i="' + i + '">Remove</button></h3>' +
+      '<div class="row3">' + field("vehicles", i, "make", "Make") + field("vehicles", i, "model", "Model") + field("vehicles", i, "color", "Colour") + "</div>" +
+      '<div class="row2">' + field("vehicles", i, "plate", "Plate", "text", ' autocapitalize="characters"') +
+      field("vehicles", i, "state", "State", "text", ' maxlength="2" autocapitalize="characters"') + "</div>";
+  }
+};
+var LIMITS = { residences: 3, jobs: 3, occupants: 10, vehicles: 4 };
+var ADD_BUTTON = { residences: "add-residence", jobs: "add-job", occupants: "add-occupant", vehicles: "add-vehicle" };
+var BLANK = {
+  residences: blankResidence, jobs: blankJob,
+  occupants: function () { return { name: "", relationship: "", adult: false }; },
+  vehicles: function () { return { make: "", model: "", color: "", plate: "", state: "" }; }
+};
+
+function renderGroup(list) {
+  $(list).innerHTML = state[list].map(GROUPS[list]).join("");
+  $(ADD_BUTTON[list]).hidden = state[list].length >= LIMITS[list];
+}
+Object.keys(GROUPS).forEach(function (list) {
+  $(ADD_BUTTON[list]).addEventListener("click", function () {
+    state[list].push(BLANK[list]());
+    renderGroup(list);
+    save();
+    var first = $(list).querySelector('[data-i="' + (state[list].length - 1) + '"][data-f]');
+    if (first) first.focus();
+  });
+  $(list).addEventListener("input", onGroupInput);
+  $(list).addEventListener("change", onGroupInput);
+  $(list).addEventListener("click", function (e) {
+    var kill = e.target.closest("[data-kill]");
+    if (!kill) return;
+    state[list].splice(+kill.dataset.i, 1);
+    renderGroup(list);
+    save();
+  });
+});
+function onGroupInput(e) {
+  var el = e.target;
+  if (!el.dataset || !el.dataset.list) return;
+  state[el.dataset.list][+el.dataset.i][el.dataset.f] = el.type === "checkbox" ? el.checked : el.value;
+  el.classList.remove("invalid");
+  save();
+}
+
+/* ---- documents ----
+   Uploaded as they're picked, so a slow connection has done its work by the
+   time the form is signed. Photos are redrawn to 2000px JPEG first: it cuts a
+   camera picture to a few hundred KB and turns whatever the phone produced
+   into something the PDF can embed. */
+$("add-files").addEventListener("click", function () { $("file-input").click(); });
+$("file-input").addEventListener("change", function () {
+  Array.prototype.forEach.call(this.files, addFile);
+  this.value = "";
+});
+
+function shrink(file) {
+  return new Promise(function (resolve) {
+    if (!/^image\//.test(file.type) || file.type === "image/png" && file.size < 1.5e6) return resolve(file);
+    var url = URL.createObjectURL(file), img = new Image();
+    img.onload = function () {
+      var scale = Math.min(1, 2000 / Math.max(img.width, img.height));
+      var canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob(function (blob) {
+        URL.revokeObjectURL(url);
+        resolve(blob ? new File([blob], file.name.replace(/\.[^.]+$/, "") + ".jpg", { type: "image/jpeg" }) : file);
+      }, "image/jpeg", 0.85);
+    };
+    img.onerror = function () { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+
+var pending = []; // files still on their way up, or that failed
+function addFile(file) {
+  var max = terms ? terms.maxAttachments : 12;
+  if (state.attachments.length + pending.length >= max) {
+    showError("You can attach up to " + max + " documents.");
+    return;
+  }
+  if (!/^image\//.test(file.type) && file.type !== "application/pdf") {
+    showError("“" + file.name + "” isn't a photo or a PDF, so it can't be attached.");
+    return;
+  }
+  var item = { key: Math.random().toString(36).slice(2), name: file.name, status: "Uploading…", failed: false };
+  if (/^image\//.test(file.type)) item.preview = URL.createObjectURL(file);
+  pending.push(item);
+  uploading++;
+  renderFiles();
+  updateNext();
+
+  shrink(file).then(function (ready) {
+    var form = new FormData();
+    form.append("file", ready, ready.name);
+    return fetch(BASE + "/api/uploads", { method: "POST", body: form }).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        if (!res.ok) throw new Error(body.error || "Upload failed (" + res.status + ")");
+        return body;
+      });
+    });
+  }).then(function (body) {
+    pending.splice(pending.indexOf(item), 1);
+    if (item.preview) previews[body.id] = item.preview;
+    state.attachments.push({ id: body.id, name: file.name, kind: body.kind, mime: body.mime, size: body.size });
+    save();
+  }).catch(function (err) {
+    item.failed = true;
+    item.status = err.message || "Upload failed";
+  }).then(function () {
+    uploading--;
+    renderFiles();
+    updateNext();
+  });
+}
+
+function renderFiles() {
+  var done = state.attachments.map(function (a, i) {
+    var thumb = previews[a.id]
+      ? '<span class="thumb" style="background-image:url(' + previews[a.id] + ')"></span>'
+      : '<span class="thumb">' + (a.kind === "pdf" ? "PDF" : "IMG") + "</span>";
+    return "<li>" + thumb + '<span class="nm">' + esc(a.name) + '</span><span class="st">Attached</span>' +
+      '<button type="button" class="kill" data-remove="' + i + '">Remove</button></li>';
+  });
+  var waiting = pending.map(function (p) {
+    return '<li><span class="thumb"' + (p.preview ? ' style="background-image:url(' + p.preview + ')"' : "") + "></span>" +
+      '<span class="nm">' + esc(p.name) + '</span><span class="st' + (p.failed ? " err" : "") + '">' + esc(p.status) + "</span>" +
+      (p.failed ? '<button type="button" class="kill" data-dismiss="' + p.key + '">Dismiss</button>' : "") + "</li>";
+  });
+  $("files").innerHTML = done.concat(waiting).join("");
+}
+$("files").addEventListener("click", function (e) {
+  var remove = e.target.closest("[data-remove]");
+  if (remove) { state.attachments.splice(+remove.dataset.remove, 1); save(); renderFiles(); return; }
+  var dismiss = e.target.closest("[data-dismiss]");
+  if (dismiss) {
+    pending = pending.filter(function (p) { return p.key !== dismiss.dataset.dismiss; });
+    renderFiles();
+  }
+});
+
+/* ---- checking each step before moving on ---- */
+function need(id, ok, message) {
+  if (ok) return null;
+  var el = $(id);
+  if (el) el.classList.add("invalid");
+  return { el: el, message: message };
+}
+function problems(step) {
+  var out = [];
+  var push = function (p) { if (p) out.push(p); };
+  if (step === 1) {
+    push(need("property", state.property.trim(), "Which home are you applying for?"));
+    push(need("moveIn", state.moveIn, "When would you like to move in?"));
+    push(need("name", state.name.trim(), "Your full name is needed."));
+    push(need("email", /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(state.email.trim()), "That email doesn't look right."));
+    push(need("phone", state.phone.replace(/\D/g, "").length >= 7, "A phone number is needed."));
+    push(need("dob", state.dob, "Your date of birth is needed for screening."));
+  }
+  if (step === 2) {
+    push(need("residences-0-address", state.residences[0].address.trim(), "Your current address is needed."));
+    state.jobs.forEach(function (j, i) {
+      if (!j.employer.trim() && (j.position || j.monthlyIncome)) {
+        push(need("jobs-" + i + "-employer", false, "Name the employer, or remove that job."));
+      }
+    });
+  }
+  if (step === 3 && uploading) out.push({ el: $("files"), message: "Wait for your documents to finish uploading." });
+  return out;
+}
+
+/* ---- review ---- */
+function renderSummary() {
+  var dl = function (pairs) {
+    return "<dl>" + pairs.filter(function (p) { return p[1]; }).map(function (p) {
+      return "<dt>" + p[0] + "</dt><dd>" + esc(p[1]) + "</dd>";
+    }).join("") + "</dl>";
+  };
+  var edit = function (step) { return '<button type="button" class="edit" data-go="' + step + '">Edit</button>'; };
+  var r = state.residences[0];
+  var jobs = state.jobs.filter(function (j) { return j.employer.trim(); });
+  $("summary").innerHTML =
+    "<h2>Check your application" + edit(1) + "</h2>" +
+    dl([["Property", state.property], ["Move-in", state.moveIn], ["Lease term", state.leaseTerm],
+        ["Name", state.name], ["Email", state.email], ["Phone", state.phone], ["Date of birth", state.dob]]) +
+    '<h3 style="margin-top:16px">History and income' + edit(2) + "</h3>" +
+    dl([["Current address", r.address],
+        ["Previous addresses", String(state.residences.length - 1 || "")],
+        ["Employment", jobs.map(function (j) { return j.employer + (j.monthlyIncome ? " — " + j.monthlyIncome + "/mo" : ""); }).join("; ") || "None listed"],
+        ["Other income", state.otherIncome]]) +
+    '<h3 style="margin-top:16px">Household' + edit(3) + "</h3>" +
+    dl([["Others living there", state.occupants.filter(function (o) { return o.name.trim(); }).map(function (o) { return o.name; }).join(", ") || "None"],
+        ["Pets", state.pets || "None"],
+        ["Vehicles", String(state.vehicles.length || "None")],
+        ["Emergency contact", state.emergencyName],
+        ["Documents", state.attachments.length ? state.attachments.length + " attached" : "None"]]);
+}
+$("summary").addEventListener("click", function (e) {
+  var go = e.target.closest("[data-go]");
+  if (go) show(+go.dataset.go);
+});
+
+/* ---- signature ---- */
+function signaturePad(canvas, wrap, onChange) {
+  var ctx = canvas.getContext("2d"), drawing = false, last = null, signed = false;
+  function size() {
+    var ratio = window.devicePixelRatio || 1;
+    var box = { width: Math.min(wrap.clientWidth, 2000), height: Math.min(wrap.clientHeight, 400) };
+    if (!box.width || !box.height) return;
+    var previous = signed ? canvas.toDataURL() : null;
+    canvas.width = Math.round(box.width * ratio);
+    canvas.height = Math.round(box.height * ratio);
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.lineWidth = 2.2; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111827";
+    if (previous) {
+      var img = new Image();
+      img.onload = function () { ctx.drawImage(img, 0, 0, box.width, box.height); };
+      img.src = previous;
+    }
+  }
+  function point(e) { var b = canvas.getBoundingClientRect(); return { x: e.clientX - b.left, y: e.clientY - b.top }; }
+  canvas.addEventListener("pointerdown", function (e) {
+    e.preventDefault();
+    drawing = true; signed = true; last = point(e);
+    ctx.beginPath(); ctx.arc(last.x, last.y, 1.1, 0, Math.PI * 2); ctx.fillStyle = "#111827"; ctx.fill();
+    wrap.classList.add("signed");
+    onChange();
+    try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* drawing works without it */ }
+  });
+  canvas.addEventListener("pointermove", function (e) {
+    if (!drawing) return;
+    e.preventDefault();
+    var p = point(e);
+    ctx.beginPath(); ctx.moveTo(last.x, last.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+    last = p;
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach(function (t) { canvas.addEventListener(t, function () { drawing = false; }); });
+  window.addEventListener("resize", size);
+  return {
+    size: size,
+    isSigned: function () { return signed; },
+    dataUrl: function () { return canvas.toDataURL("image/png"); },
+    clear: function () { ctx.clearRect(0, 0, canvas.width, canvas.height); signed = false; wrap.classList.remove("signed"); onChange(); }
+  };
+}
+var pad = signaturePad($("sig"), $("sigwrap"), function () { updateNext(); });
+$("clear-sig").addEventListener("click", function () { pad.clear(); });
+
+/* ---- moving between steps ---- */
+function showError(message) {
+  $("error").textContent = message;
+  $("error").hidden = !message;
+}
+function updateNext() {
+  var next = $("next");
+  if (state.step === 4) {
+    next.textContent = "Submit application";
+    next.disabled = !(state.screeningAcknowledged && state.certified && pad.isSigned());
+  } else {
+    next.textContent = "Continue";
+    next.disabled = state.step === 3 && uploading > 0;
+  }
+  $("back").hidden = state.step === 1;
+}
+function show(step) {
+  state.step = step;
+  document.querySelectorAll("section[data-step]").forEach(function (s) { s.hidden = +s.dataset.step !== step; });
+  $("step-label").textContent = "Step " + step + " of " + STEPS;
+  $("bar").style.width = (step / STEPS) * 100 + "%";
+  showError("");
+  if (step === 4) { renderSummary(); requestAnimationFrame(pad.size); }
+  updateNext();
+  save();
+  window.scrollTo(0, 0);
+}
+
+$("back").addEventListener("click", function () { if (state.step > 1) show(state.step - 1); });
+$("next").addEventListener("click", function () {
+  if (state.step < STEPS) {
+    var found = problems(state.step);
+    if (found.length) {
+      showError(found[0].message);
+      if (found[0].el) { found[0].el.scrollIntoView({ block: "center" }); if (found[0].el.focus) found[0].el.focus(); }
+      return;
+    }
+    show(state.step + 1);
+    return;
+  }
+  submit();
+});
+
+function submit() {
+  var next = $("next");
+  next.disabled = true;
+  next.textContent = "Submitting…";
+  showError("");
+  var body = Object.assign({}, state, { signature: pad.dataUrl() });
+  delete body.step;
+  fetch(BASE + "/api/applications", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  }).then(function (res) {
+    return res.json().catch(function () { return {}; }).then(function (out) {
+      if (!res.ok) throw new Error(out.error || "Something went wrong (" + res.status + "). Please try again.");
+      return out;
+    });
+  }).then(function (out) {
+    clearDraft();
+    window.removeEventListener("pagehide", saveNow);
+    state = freshState();
+    document.querySelectorAll("section[data-step]").forEach(function (s) { s.hidden = true; });
+    $("done").hidden = false;
+    $("restored").hidden = true;
+    $("copy-link").href = BASE + out.pdf;
+    $("footer").hidden = true;
+    $("step-label").textContent = "Submitted";
+    $("bar").style.width = "100%";
+    window.scrollTo(0, 0);
+  }).catch(function (err) {
+    showError(err.message);
+    updateNext();
+  });
+}
+
+$("start-over").addEventListener("click", function () {
+  if (!confirm("Clear everything you've entered and start again?")) return;
+  clearDraft();
+  location.replace(location.pathname + location.search);
+});
+window.addEventListener("beforeunload", function (e) {
+  if ($("done").hidden && (state.name || state.property) && state.step > 1) { e.preventDefault(); e.returnValue = ""; }
+});
+
+/* ---- start ---- */
+fetch(BASE + "/api/terms").then(function (r) { return r.json(); }).then(function (t) {
+  terms = t;
+  $("screening-notice").textContent = t.screeningNotice;
+  $("certification").textContent = t.certification;
+  $("acknowledgements").innerHTML = t.acknowledgements.map(function (a) { return "<li>" + esc(a) + "</li>"; }).join("");
+  $("leaseTerm").innerHTML = t.leaseTerms.map(function (x) { return "<option>" + esc(x) + "</option>"; }).join("");
+  $("leaseTerm").value = state.leaseTerm;
+}).catch(function () { showError("Part of this page didn't load. Check your connection and reload."); });
+
+(function start() {
+  var draft = loadDraft();
+  if (draft) { state = draft; $("restored").hidden = false; }
+  // A link from a listing can name the home: /apply/?property=12+Example+Ave+NE
+  var named = new URLSearchParams(location.search).get("property");
+  if (named && !state.property) state.property = named.slice(0, 200);
+  bindFields();
+  Object.keys(GROUPS).forEach(renderGroup);
+  renderFiles();
+  show(state.step);
+})();
+</script>
+</body>
+</html>

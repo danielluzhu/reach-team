@@ -30,3 +30,10 @@ node_modules/
 
 # Photos of cars in the driveway
 uploads/plates/
+
+# Rental applications: applicants' details, IDs and pay stubs
+applications/applications.db
+applications/applications.db-shm
+applications/applications.db-wal
+applications/uploads/
+applications/pdfs/

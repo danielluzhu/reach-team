@@ -1,0 +1,24 @@
+[Unit]
+Description=Rental application form (:3200)
+Documentation=file:///workspace/applications/README.md
+After=network-online.target
+Wants=network-online.target
+# Never give up restarting, no matter how often it crashes.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/workspace/applications
+Environment=PATH=/home/ubuntu/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PORT=3200
+ExecStart=/home/ubuntu/.bun/bin/bun run server.ts
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apply
+
+[Install]
+WantedBy=multi-user.target
