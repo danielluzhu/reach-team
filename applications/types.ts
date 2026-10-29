@@ -63,4 +63,14 @@ export type Application = {
   certification: string;
   screeningNotice: string;
   acknowledgements: string[];
+
+  /**
+   * Set on applications brought over from the old Google Form, which have no
+   * drawn signature or notice. `answers` is every question that form asked,
+   * with the applicant's answer, in the sheet's order — the fields above are
+   * filled from it as far as they go, and this keeps the rest.
+   */
+  source?: "google-form";
+  answers?: [string, string][];
+  groupSize?: string;
 };

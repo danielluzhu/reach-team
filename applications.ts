@@ -9,7 +9,9 @@
  *
  * What was submitted is read here out of `applications.db`, **read-only**, and
  * shown behind the sign-in on the Applications tab. Nothing in the CRM writes
- * to that database: an application only exists because somebody submitted one.
+ * to that database: an application only exists because somebody submitted one,
+ * here or on the Google Form that came before it (imported once, with the
+ * answers kept as they were).
  */
 import { Database } from "bun:sqlite";
 import { FAVICON_LINK, trustedOrigins } from "./auth";
@@ -107,6 +109,10 @@ type Stored = {
   pets: string;
   vehicles: unknown[];
   attachments: { name: string }[];
+  /** Only on applications brought over from the old Google Form. */
+  source?: "google-form";
+  answers?: [string, string][];
+  groupSize?: string;
 };
 
 /** Opened per request: the form app writes to it while the CRM runs. */
@@ -153,12 +159,18 @@ const day = (iso: string) =>
 const time = (iso: string) =>
   new Date(iso).toLocaleTimeString("en-US", { timeZone: "America/Los_Angeles", hour: "numeric", minute: "2-digit" });
 
+/** The Google Form's uploads are Drive links among its answers, not files here. */
+const driveLinks = (a: Stored) =>
+  (a.answers ?? []).reduce((n, [, answer]) => n + (answer.match(/https:\/\/drive\.google\.com\//g)?.length ?? 0), 0);
+
 function listRow(a: Stored): string {
   const income = monthlyIncome(a);
   const others = a.occupants.length;
   const adults = a.occupants.filter((o) => o.adult).length;
+  // The Google Form asked how big the group was, not who was in it.
+  const group = a.groupSize ? `Group of ${a.groupSize}` : "";
   const household = [
-    others ? `${others} other${others === 1 ? "" : "s"}${adults ? ` (${adults} adult${adults === 1 ? "" : "s"})` : ""}` : "Just them",
+    group || (others ? `${others} other${others === 1 ? "" : "s"}${adults ? ` (${adults} adult${adults === 1 ? "" : "s"})` : ""}` : "Just them"),
     a.pets ? `pets: ${a.pets}` : "",
     a.vehicles.length ? `${a.vehicles.length} vehicle${a.vehicles.length === 1 ? "" : "s"}` : "",
   ].filter(Boolean);
@@ -174,7 +186,7 @@ function listRow(a: Stored): string {
           <td>${income === null ? `<span class="muted">${a.otherIncome ? "Other income only" : "None listed"}</span>` : `$${income.toLocaleString("en-US")}/mo`}
             <span class="sub">${escapeHtml(a.jobs.map((j) => j.employer).join(", "))}</span></td>
           <td>${household.map((h) => escapeHtml(h)).join("<br />")}</td>
-          <td>${a.attachments.length || `<span class="muted">none</span>`}</td>
+          <td>${a.attachments.length || driveLinks(a) || `<span class="muted">none</span>`}${a.source === "google-form" ? `<span class="sub">Google Form</span>` : ""}</td>
           <td class="actions"><a class="pdf-link" href="/applications/${a.id}.pdf" target="_blank" rel="noopener">PDF</a></td>
         </tr>`;
 }
@@ -218,8 +230,8 @@ export function renderApplicationsList(nav: string, navCss: string): string {
   <p class="notice"><strong>The applications database can't be read right now.</strong> It lives in
     <code>${escapeHtml(APPLY_DB)}</code>, written by the form app on :3200.</p>`
       : `  <h1>Applications</h1>
-  <p class="lede">Rental applications submitted through the public form, newest first &mdash;
-    ${applications.length} in all. Each PDF has the application, the signature and every document the
+  <p class="lede">Rental applications submitted through the public form, and before it the Google Form,
+    newest first &mdash; ${applications.length} in all. Each PDF has the application, the signature and every document the
     applicant attached, in one file.</p>
 
   <div class="share">

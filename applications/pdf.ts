@@ -170,6 +170,20 @@ export async function buildApplicationPdf(a: Application): Promise<Uint8Array> {
   row(ctx, "Documents attached",
     a.attachments.length ? a.attachments.map((f) => f.name).join("; ") : "None");
 
+  // The old Google Form: every answer as it was given, in the form's order.
+  // It was signed by typing a name, which is among these answers.
+  if (a.answers?.length) {
+    heading(ctx, "Every answer on the Google Form");
+    // Some questions run to a paragraph, too long for the label column.
+    for (const [question, answer] of a.answers) {
+      ctx.y += 2;
+      paragraph(ctx, question.split("\n")[0]!, 8.5, MUTED);
+      ctx.y += 5;
+      paragraph(ctx, answer, 10);
+    }
+  }
+  if (a.source === "google-form") return doc.save();
+
   heading(ctx, "Screening notice");
   paragraph(ctx, a.screeningNotice);
   heading(ctx, "Acknowledgements");
