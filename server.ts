@@ -303,6 +303,7 @@ const EDITABLE_FIELDS = [
   "lease_start",
   "lease_end",
   "rent_amount",
+  "lead_tenant_id",
 ] as const;
 
 /** Must stay in step with the CHECK constraint in schema.sql. */
@@ -358,6 +359,12 @@ function validateTenant(body: any): { values: any[] } | { error: string } {
     if (!Number.isFinite(rent) || rent < 0) return { error: "Rent must be a number, or blank." };
   }
 
+  // Whose lease this tenant is on; blank for a lease of their own. Whether
+  // that tenant can be a lead is checkLead's business, once the id is known.
+  const leadRaw = text("lead_tenant_id");
+  const lead = leadRaw === null ? null : Number(leadRaw);
+  if (lead !== null && !Number.isInteger(lead)) return { error: "Lead tenant must be another tenant, or blank." };
+
   // NOT NULL on both name columns, so the one that was left out becomes "".
   return {
     values: [
@@ -373,22 +380,53 @@ function validateTenant(body: any): { values: any[] } | { error: string } {
       leaseStart as string | null,
       leaseEnd as string | null,
       rent,
+      lead,
     ],
   };
+}
+
+/**
+ * A lease has one lead and everyone else points straight at them, so the
+ * lead must be a different tenant who isn't on somebody else's lease — and a
+ * tenant others point at can't become a member of another lease themselves.
+ */
+function checkLead(id: number | null, lead: number | null): string | null {
+  if (lead === null) return null;
+  if (lead === id) return "A tenant can't be on their own lease as a member — leave Lead blank.";
+  const row = db.query("SELECT lead_tenant_id FROM tenants WHERE id = ?").get(lead) as
+    | { lead_tenant_id: number | null }
+    | null;
+  if (!row) return "That lead tenant no longer exists — reload the page.";
+  if (row.lead_tenant_id !== null) return "That tenant is on someone else's lease, so can't be its lead.";
+  if (id !== null && db.query("SELECT 1 FROM tenants WHERE lead_tenant_id = ?").get(id)) {
+    return "This tenant is the lead on a lease; move the others off it first.";
+  }
+  return null;
+}
+
+/** How a row sits in its lease: the lead of others, or on a lead's lease. */
+type LeaseRole = { lead?: boolean; leadName?: string };
+
+function leaseRole(t: any): LeaseRole {
+  if (t.lead_tenant_id) {
+    const lead = db.query("SELECT first_name, last_name FROM tenants WHERE id = ?").get(t.lead_tenant_id) as any;
+    return lead ? { leadName: `${lead.first_name} ${lead.last_name}`.trim() } : {};
+  }
+  return db.query("SELECT 1 FROM tenants WHERE lead_tenant_id = ?").get(t.id) ? { lead: true } : {};
 }
 
 const insertTenant = db.query(
   `INSERT INTO tenants
      (property_address, unit, access_code, building_code, status,
-      first_name, last_name, email, phone, lease_start, lease_end, rent_amount)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
+      first_name, last_name, email, phone, lease_start, lease_end, rent_amount, lead_tenant_id)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`
 );
 
 const updateTenant = db.prepare(
   `UPDATE tenants SET
      property_address = ?, unit = ?, access_code = ?, building_code = ?, status = ?,
      first_name = ?, last_name = ?, email = ?, phone = ?,
-     lease_start = ?, lease_end = ?, rent_amount = ?
+     lease_start = ?, lease_end = ?, rent_amount = ?, lead_tenant_id = ?
    WHERE id = ?`
 );
 
@@ -399,6 +437,20 @@ const updateTenant = db.prepare(
  * row edited to "rented", below) only has to set that attribute.
  */
 const TOGGLE_JS = `
+(function () {
+  // An address's rows, folded under its summary row until it is opened.
+  var table = document.getElementById("access-table");
+  if (table) table.addEventListener("click", function (e) {
+    var toggle = e.target.closest(".group-toggle");
+    if (!toggle) return;
+    var open = toggle.getAttribute("aria-expanded") !== "true";
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    toggle.closest("tr").classList.toggle("open", open);
+    [].forEach.call(table.querySelectorAll("tbody:not(#rented-rows) tr[data-id]"), function (tr) {
+      if (tr.dataset.group === toggle.dataset.group) tr.hidden = !open;
+    });
+  });
+})();
 (function () {
   var button = document.getElementById("toggle-rented");
   var body = document.getElementById("rented-rows");
@@ -524,7 +576,14 @@ const PAGE_JS = `
     if (cell(tr, "vacant_until")) cell(tr, "vacant_until").innerHTML = "";
     cell(tr, "name").innerHTML =
       input("first_name", t.first_name, 'placeholder="First"') +
-      input("last_name", t.last_name, 'placeholder="Last"');
+      input("last_name", t.last_name, 'placeholder="Last"') +
+      '<select data-f="lead_tenant_id" title="Whose lease this tenant is on"></select>';
+    fillLeads(tr, t);
+    var address = tr.querySelector('[data-f="property_address"]');
+    if (address) address.addEventListener("input", function () {
+      var picked = tr.querySelector('[data-f="lead_tenant_id"]');
+      fillLeads(tr, { id: t.id, property_address: address.value, lead_tenant_id: picked && picked.value });
+    });
     cell(tr, "email").innerHTML = input("email", t.email, 'type="email"');
     cell(tr, "phone").innerHTML = input("phone", t.phone);
     cell(tr, "lease").innerHTML =
@@ -536,6 +595,27 @@ const PAGE_JS = `
       '<button type="button" data-act="cancel">Cancel</button>';
     var first = tr.querySelector("input, select");
     if (first) first.focus();
+  }
+
+  /**
+   * The leases a tenant can be on: their own, or that of anyone at the same
+   * address who holds one. Read off the rows already on the page, so it keeps
+   * up with an address being retyped in the editor.
+   */
+  function fillLeads(tr, t) {
+    var select = tr.querySelector('[data-f="lead_tenant_id"]');
+    if (!select) return;
+    var key = String(t.property_address || "").trim().replace(/\\s+/g, " ").toLowerCase();
+    var html = '<option value="">Own lease</option>';
+    [].forEach.call(table.querySelectorAll("tr[data-tenant]"), function (other) {
+      var o = JSON.parse(other.dataset.tenant);
+      if (String(other.dataset.id) === String(t.id) || o.lead_tenant_id) return;
+      if (String(o.property_address || "").trim().replace(/\\s+/g, " ").toLowerCase() !== key || !key) return;
+      var id = other.dataset.id;
+      html += '<option value="' + id + '"' + (String(t.lead_tenant_id || "") === id ? " selected" : "") + '>On ' +
+        esc((o.first_name + " " + o.last_name).trim()) + '&rsquo;s lease</option>';
+    });
+    select.innerHTML = html;
   }
 
   function startEdit(tr) {
@@ -872,7 +952,7 @@ const PAGE_JS = `
  * button; the editor script turns those into inputs. The button is a
  * convenience only — the write route checks the user itself.
  */
-function renderRow(t: any, canEdit: boolean, layout: Column[]): string {
+function renderRow(t: any, canEdit: boolean, layout: Column[], role: LeaseRole = {}, folded = false): string {
   // The doc records an end date but no start for most tenants, so avoid
   // rendering a dangling arrow. On a vacant unit the date isn't a lease at
   // all — it's when the vacancy ends — so it belongs to the Vacant until
@@ -899,6 +979,8 @@ function renderRow(t: any, canEdit: boolean, layout: Column[]): string {
       t.status === "vacant" && t.lease_end ? escapeHtml(t.lease_end) : "",
     name: `${escapeHtml(t.first_name)} ${escapeHtml(t.last_name)}${
       isSampleTenant(t) ? ' <span class="tag">sample</span>' : ""
+    }${role.lead ? ' <span class="tag lead">lead</span>' : ""}${
+      role.leadName ? `<span class="on-lease">on ${escapeHtml(role.leadName)}&rsquo;s lease</span>` : ""
     }`,
     email: escapeHtml(t.email),
     phone: escapeHtml(t.phone),
@@ -920,8 +1002,118 @@ function renderRow(t: any, canEdit: boolean, layout: Column[]): string {
     .map((c) => `\n        <td data-col="${c.field}" data-label="${escapeAttr(c.label)}">${cells[c.field]}</td>`)
     .join("");
 
+  // Every row names its address group, so a row re-rendered after a save
+  // still folds with the rest of its building.
+  const classes = [isSampleTenant(t) ? "sample" : "", role.leadName ? "member" : ""].filter(Boolean).join(" ");
   return `
-      <tr${isSampleTenant(t) ? ' class="sample"' : ""}${editable}>${tds}${actions}
+      <tr${classes ? ` class="${classes}"` : ""} data-group="${escapeAttr(groupKey(t.property_address))}"${
+        folded ? " hidden" : ""
+      }${editable}>${tds}${actions}
+      </tr>`;
+}
+
+/** One group per address, however its case or spacing was typed. */
+const groupKey = (address: unknown) => String(address ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+
+/**
+ * The access table's rows, an address at a time. An address with one row is
+ * just that row. Any more and they fold under a summary row: for a house let
+ * as one lease that row is the lead tenant's — their name, email, phone and
+ * lease, with how many others are on it — and for a building of individual
+ * leases it says how many there are. Opened, the lead comes first and the rest
+ * of their lease follows them.
+ */
+function renderGroupedRows(tenants: any[], canEdit: boolean, layout: Column[]): string {
+  const byId = new Map(tenants.map((t) => [t.id, t]));
+  const groups = new Map<string, any[]>();
+  for (const t of tenants) {
+    const key = groupKey(t.property_address);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(t);
+  }
+
+  let html = "";
+  for (const [key, rows] of groups) {
+    // A member whose lead is elsewhere (another address, or rented away) is
+    // shown as holding their own lease rather than being lost.
+    const leadOf = (t: any) => {
+      const lead = t.lead_tenant_id ? byId.get(t.lead_tenant_id) : null;
+      return lead && groupKey(lead.property_address) === key ? lead : null;
+    };
+    const heads = rows.filter((t) => !leadOf(t));
+    const membersOf = new Map<number, any[]>();
+    for (const t of rows) {
+      const lead = leadOf(t);
+      if (lead) membersOf.set(lead.id, [...(membersOf.get(lead.id) ?? []), t]);
+    }
+    const ordered = heads.flatMap((h) => [h, ...(membersOf.get(h.id) ?? [])]);
+    const roleOf = (t: any): LeaseRole => {
+      const lead = leadOf(t);
+      if (lead) return { leadName: `${lead.first_name} ${lead.last_name}`.trim() };
+      return membersOf.has(t.id) ? { lead: true } : {};
+    };
+
+    if (rows.length === 1) {
+      html += renderRow(rows[0], canEdit, layout, roleOf(rows[0]));
+      continue;
+    }
+    html += renderGroupRow(key, rows, heads, membersOf, canEdit, layout);
+    html += ordered.map((t) => renderRow(t, canEdit, layout, roleOf(t), true)).join("");
+  }
+  return html;
+}
+
+/** The folded address: the lead tenant's row in summary, or a count of leases. */
+function renderGroupRow(
+  key: string,
+  rows: any[],
+  heads: any[],
+  membersOf: Map<number, any[]>,
+  canEdit: boolean,
+  layout: Column[]
+): string {
+  const same = (pick: (t: any) => unknown) => {
+    const values = new Set(rows.map((t) => String(pick(t) ?? "")));
+    return values.size === 1 ? [...values][0]! : null;
+  };
+  // One lease: a lead with everyone else on it. Several heads means several
+  // leases — rooms or units let one by one.
+  const lead = heads.length === 1 ? heads[0] : null;
+  const others = lead ? (membersOf.get(lead.id)?.length ?? 0) : 0;
+  const statuses = [...new Set(rows.map((t) => t.status))];
+  const units = new Set(rows.map((t) => String(t.unit ?? "").trim()).filter(Boolean));
+  const accessShared = same((t) => `${t.access_code ?? ""}|${t.building_code ?? ""}`);
+
+  const leaseText = (t: any) =>
+    t.lease_start && t.lease_end
+      ? `${escapeHtml(t.lease_start)} &rarr; ${escapeHtml(t.lease_end)}`
+      : t.lease_end ? `ends ${escapeHtml(t.lease_end)}` : t.lease_start ? `from ${escapeHtml(t.lease_start)}` : "";
+
+  const cells: Record<string, string> = {
+    property: `<button type="button" class="group-toggle" aria-expanded="false" data-group="${escapeAttr(key)}">` +
+      `<span class="chev" aria-hidden="true">&#9656;</span>${escapeHtml(rows[0].property_address)}</button>`,
+    unit: units.size === 1 ? escapeHtml([...units][0]) : units.size ? `${units.size} units` : "",
+    access: accessShared !== null ? renderAccess(rows[0]) : "",
+    status: statuses.length === 1
+      ? `<span class="status ${escapeHtml(statuses[0])}">${escapeHtml(statuses[0])}</span>`
+      : statuses.map((s) => `<span class="status ${escapeHtml(s)}">${rows.filter((t) => t.status === s).length} ${escapeHtml(s)}</span>`).join(" "),
+    vacant_until: "",
+    name: lead
+      ? `${escapeHtml(lead.first_name)} ${escapeHtml(lead.last_name)}${others ? ' <span class="tag lead">lead</span>' : ""}` +
+        `<span class="on-lease">${others ? `+ ${others} on the lease` : `${rows.length} rows`}</span>`
+      : heads.length === rows.length
+        ? `${heads.length} individual leases`
+        : `${heads.length} leases<span class="on-lease">${rows.length} tenants</span>`,
+    email: lead ? escapeHtml(lead.email) : "",
+    phone: lead ? escapeHtml(lead.phone) : "",
+    lease: lead && lead.status !== "vacant" ? leaseText(lead) : "",
+    rent: lead && lead.rent_amount ? "$" + lead.rent_amount : "",
+  };
+  const tds = layout
+    .map((c) => `\n        <td data-col="${c.field}" data-label="${escapeAttr(c.label)}">${cells[c.field]}</td>`)
+    .join("");
+  return `
+      <tr class="group-row">${tds}${canEdit ? `\n        <td data-col="actions" data-label="" class="row-actions"></td>` : ""}
       </tr>`;
 }
 
@@ -1005,12 +1197,13 @@ async function renderPage(user: User): Promise<string> {
 
   // Rented units go to a section of their own at the foot of the table, folded
   // away until someone asks for them. Both halves keep the query's order.
-  const rows = tenants
-    .filter((t) => t.status !== HIDDEN_STATUS)
-    .map((t) => renderRow(t, canEdit, layout))
-    .join("");
+  const rows = renderGroupedRows(
+    tenants.filter((t) => t.status !== HIDDEN_STATUS),
+    canEdit,
+    layout
+  );
   const hiddenTenants = tenants.filter((t) => t.status === HIDDEN_STATUS);
-  const hiddenRows = hiddenTenants.map((t) => renderRow(t, canEdit, layout)).join("");
+  const hiddenRows = hiddenTenants.map((t) => renderRow(t, canEdit, layout, leaseRole(t))).join("");
 
   const columnCount = layout.length + (canEdit ? 1 : 0);
   const tableWidth =
@@ -1196,6 +1389,17 @@ ${DOC_CSS}
     #toggle-rented .count { background: #ede9fe; color: #5b21b6; border-radius: 999px;
       padding: 0.05rem 0.45rem; font-size: 0.75rem; }
     #rented-rows td { background: #fcfcfd; }
+
+    /* An address's rows, folded under one summary row (see renderGroupedRows). */
+    #access tr.group-row td { background: #fbfcfe; }
+    #access tr.group-row.open td { background: #f3f6fb; border-bottom-color: #e3e8f0; }
+    .group-toggle { display: flex; align-items: baseline; gap: 0.4rem; background: none; border: 0; padding: 0;
+      font: 600 0.9rem system-ui, sans-serif; color: inherit; cursor: pointer; text-align: left; }
+    .group-toggle .chev { color: #888; transition: transform 0.12s ease; }
+    .group-toggle[aria-expanded="true"] .chev { transform: rotate(90deg); }
+    #access .on-lease { display: block; font-size: 0.75rem; color: #888; }
+    #access tr.member td[data-col="name"] { padding-left: 1.6rem; }
+    .tag.lead { background: #dbeafe; color: #1e40af; }
 
     /* Stack the access table into cards on narrow screens. Only that table —
        the unit tables in the home sections scroll sideways instead, which is
@@ -2061,6 +2265,8 @@ const server = Bun.serve({
 
         const checked = validateTenant(body);
         if ("error" in checked) return Response.json({ error: checked.error }, { status: 400 });
+        const leadError = checkLead(null, checked.values.at(-1));
+        if (leadError) return Response.json({ error: leadError }, { status: 400 });
 
         const created = insertTenant.get(...checked.values) as { id: number };
         const row = db.query("SELECT * FROM tenants WHERE id = ?").get(created.id) as any;
@@ -2069,7 +2275,7 @@ const server = Bun.serve({
             `added by ${user.username}`
         );
         return Response.json(
-          { ok: true, row: renderRow(row, true, loadColumnLayout()) },
+          { ok: true, row: renderRow(row, true, loadColumnLayout(), leaseRole(row)) },
           { status: 201, headers: { "Cache-Control": "no-store, private" } }
         );
       }
@@ -2106,6 +2312,8 @@ const server = Bun.serve({
 
       const checked = validateTenant(body);
       if ("error" in checked) return Response.json({ error: checked.error }, { status: 400 });
+      const leadError = checkLead(id, checked.values.at(-1));
+      if (leadError) return Response.json({ error: leadError }, { status: 400 });
 
       updateTenant.run(...checked.values, id);
       const row = db.query("SELECT * FROM tenants WHERE id = ?").get(id) as any;
@@ -2114,7 +2322,7 @@ const server = Bun.serve({
         `[${new Date().toISOString()}] tenant ${id} (${row.first_name} ${row.last_name}) edited by ${user.username}`
       );
       return Response.json(
-        { ok: true, row: renderRow(row, true, layout) },
+        { ok: true, row: renderRow(row, true, layout, leaseRole(row)) },
         { headers: { "Cache-Control": "no-store, private" } }
       );
     }

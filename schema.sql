@@ -16,6 +16,9 @@ CREATE TABLE tenants (
     -- own code; building_code is shared by every unit in that building.
     access_code     TEXT,
     building_code   TEXT,
+    -- On a shared lease, the lead tenant's row; NULL for whoever holds a lease
+    -- of their own, the lead included.
+    lead_tenant_id  INTEGER REFERENCES tenants(id) ON DELETE SET NULL,
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

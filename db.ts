@@ -289,6 +289,17 @@ db.run(`
 db.run(`CREATE INDEX IF NOT EXISTS idx_tour_events_state ON tour_events(state, attempts)`);
 
 /**
+ * Who a tenant shares a lease with. A house let to a group has one lead tenant
+ * and everyone else points at them; a building of individual leases (one per
+ * room or unit) leaves this empty on every row. Added after the table, so an
+ * existing crm.db gets the column here.
+ */
+const tenantColumns = db.query(`PRAGMA table_info(tenants)`).all() as { name: string }[];
+if (tenantColumns.length && !tenantColumns.some((c) => c.name === "lead_tenant_id")) {
+  db.run(`ALTER TABLE tenants ADD COLUMN lead_tenant_id INTEGER REFERENCES tenants(id) ON DELETE SET NULL`);
+}
+
+/**
  * When the row was taken to be posted.
  *
  * Added with the claim in `flushQueue`: a tour being sent right now is held in
